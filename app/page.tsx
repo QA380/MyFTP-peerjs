@@ -353,67 +353,69 @@ export default function Home() {
             Connect | transfer files/folders | calls
           </p>
 
-          <section className="mt-4 space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-              <select
-                className={inputClass}
-                value={mode}
-                onChange={(e) => {
-                  const nextMode = e.target.value as "cloud" | "local";
-                  setMode(nextMode);
-                  applyModeDefaults(nextMode);
-                }}
-              >
-                <option value="cloud">Cloud</option>
-                <option value="local">Local server</option>
-              </select>
-              <input
-                className={inputClass}
-                placeholder="Host"
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-              />
-              <input
-                className={inputClass}
-                placeholder="Port"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-              />
-              <input
-                className={inputClass}
-                placeholder="Path"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-              <input
-                className={inputClass}
-                placeholder="Secure: true/false"
-                value={secure}
-                onChange={(e) => setSecure(e.target.value)}
-              />
-              <button className={buttonClass} onClick={makePeer}>
-                Reconnect Peer
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-400">{modeHint}</p>
-
-            <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-sm text-slate-300">
-              <strong className="text-slate-100">Your Peer ID:</strong>
-              <button
-                className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
-                onClick={copyPeerId}
-                title="Click to copy"
-              >
-                {myId}
-              </button>
-            </div>
-          </section>
-
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
+
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
+                <select
+                  className={inputClass}
+                  value={mode}
+                  onChange={(e) => {
+                    const nextMode = e.target.value as "cloud" | "local";
+                    setMode(nextMode);
+                    applyModeDefaults(nextMode);
+                  }}
+                >
+                  <option value="cloud">Cloud</option>
+                  <option value="local">Local server</option>
+                </select>
+                <input
+                  className={inputClass}
+                  placeholder="Host"
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                />
+                <input
+                  className={inputClass}
+                  placeholder="Port"
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                />
+                <input
+                  className={inputClass}
+                  placeholder="Path"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                <input
+                  className={inputClass}
+                  placeholder="Secure: true/false"
+                  value={secure}
+                  onChange={(e) => setSecure(e.target.value)}
+                />
+                <button className={buttonClass} onClick={makePeer}>
+                  Reconnect Peer
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-400">{modeHint}</p>
+
+              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-sm text-slate-300">
+                <strong className="text-slate-100">Your Peer ID:</strong>
+                <button
+                  className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
+                  onClick={copyPeerId}
+                  title="Click to copy"
+                >
+                  {myId}
+                </button>
+              </div>
+            </section>
+
             <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
 
@@ -482,21 +484,21 @@ export default function Home() {
                 Connection: <strong className="text-slate-100">{connState}</strong>
               </p>
             </section>
-
-            <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
-              <div
-                ref={logContainerRef}
-                className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
-              >
-                {logs.map((row) => (
-                  <div key={row.id} className={row.error ? "text-rose-400" : "text-slate-200"}>
-                    {row.text}
-                  </div>
-                ))}
-              </div>
-            </section>
           </div>
+
+          <section className="mt-4 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
+            <div
+              ref={logContainerRef}
+              className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
+            >
+              {logs.map((row) => (
+                <div key={row.id} className={row.error ? "text-rose-400" : "text-slate-200"}>
+                  {row.text}
+                </div>
+              ))}
+            </div>
+          </section>
         </main>
 
         <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
