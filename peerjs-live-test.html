@@ -24,13 +24,20 @@
       font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
       color: var(--text);
       background: radial-gradient(circle at top right, #1e3a8a 0%, var(--bg) 45%), var(--bg);
-      display: grid;
-      place-items: center;
       padding: 24px;
     }
 
+    .cards {
+      width: min(1000px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
     .card {
-      width: min(700px, 100%);
+      width: 100%;
       background: rgba(17, 24, 39, 0.9);
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -39,17 +46,16 @@
     }
 
     .card1 {
-      width: min(700px, 100%);
-      height: min(350px, 100%);
+      width: 100%;
       background: rgba(17, 24, 39, 0.9);
-      border: 1px solder var(--border);
+      border: 1px solid var(--border);
       border-radius: 14px;
       padding: 20px;
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
     }
 
     .card > h1 {
-      margin: 80 0 8px;
+      margin: 0 0 8px;
       font-size: 1.5rem;
     }
 
@@ -246,6 +252,10 @@
     }
 
     @media (max-width: 980px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
       .layout {
         grid-template-columns: 1fr;
       }
@@ -258,16 +268,49 @@
 
 </head>
 <body>
-  <main class="card1">
-    
-  </main>
+  <div class="cards">
+    <main class="card1">
+      <h1>PeerJS Call</h1>
 
-</body>
+      <!-- Calls -->
+      <section class="panel call-page">
+          <h1>Calls</h1>
+          <div class="stack">
+            <div class="actions">
+              <button id="audioCallBtn" type="button">Audio Call</button>
+              <button id="videoCallBtn" type="button">Video Call</button>
+            </div>
+            <div class="media-grid">
+              <div class="media-box">
+                <h3>Send</h3>
+                <video id="localVideo" autoplay playsinline muted></video>
+              </div>
+              <div class="media-box">
+                <h3>Recieve</h3>
+                <video id="remoteVideo" autoplay playsinline></video>
+              </div>
+            </div>
+            <div class="hint"> Secured Network </div>
+          </div>
+        </section>
+        
 
+        <!-- File Transfer -->
+        <section class="panel file-page">
+          <h1>File Transfer</h1>
+          <div class="stack">
+            <input id="fileInput" type="file" multiple />
+            <input id="folderInput" type="file" webkitdirectory directory multiple />
+            <div class="actions">
+              <button id="sendFilesBtn" type="button">Send Files</button>
+              <button id="sendFolderBtn" type="button">Send Folder</button>
+            </div>
+            <div class="hint">Pick files or a folder, then send them over the active data connection.</div>
+          </div>
+        </section>
+    </main>
 
-</head>
-<body>
-  <main class="card">
+    <main class="card">
     <h1>PeerJS Live Test</h1>
     <p>Connect, transfer files or folders, and place audio or video calls from one place.</p>
 
@@ -323,42 +366,12 @@
       </div>
 
       <div class="column">
-        <section class="panel call-page">
-          <h1>Calls</h1>
-          <div class="stack">
-            <div class="actions">
-              <button id="audioCallBtn" type="button">Audio Call</button>
-              <button id="videoCallBtn" type="button">Video Call</button>
-            </div>
-            <div class="media-grid">
-              <div class="media-box">
-                <h3>Local Stream</h3>
-                <video id="localVideo" autoplay playsinline muted></video>
-              </div>
-              <div class="media-box">
-                <h3>Remote Stream</h3>
-                <video id="remoteVideo" autoplay playsinline></video>
-              </div>
-            </div>
-            <div class="hint">Allow camera and microphone when prompted for calls.</div>
-          </div>
-        </section>
+        
 
-        <section class="panel file-page">
-          <h1>File Transfer</h1>
-          <div class="stack">
-            <input id="fileInput" type="file" multiple />
-            <input id="folderInput" type="file" webkitdirectory directory multiple />
-            <div class="actions">
-              <button id="sendFilesBtn" type="button">Send Files</button>
-              <button id="sendFolderBtn" type="button">Send Folder</button>
-            </div>
-            <div class="hint">Pick files or a folder, then send them over the active data connection.</div>
-          </div>
-        </section>
       </div>
     </div>
-  </main>
+    </main>
+  </div>
 
   <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
   <script>
