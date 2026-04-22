@@ -18,7 +18,7 @@ type FilePayload = {
 };
 
 const inputClass =
-  "w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400";
+  "w-full rounded-xl border border-slate-700 bg-[#030712]/80 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400";
 const buttonClass =
   "rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400";
 
@@ -345,15 +345,15 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_right,_#1e3a8a_0%,_#0f172a_45%)] px-4 py-8 text-slate-100 sm:px-6">
+    <div className="min-h-screen bg-[#030712] px-4 py-8 text-slate-100 sm:px-6">
       <div className="mx-auto grid w-full max-w-7xl gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <main className="rounded-2xl border border-slate-800 bg-slate-900/85 p-5 backdrop-blur">
+        <main className="rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
           <p className="mt-2 text-sm text-slate-300">
             Connect | transfer files/folders | calls
           </p>
 
-          <section className="mt-4 space-y-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+          <section className="mt-4 space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
             <div className="grid grid-cols-1 gap-2 md:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
               <select
                 className={inputClass}
@@ -401,7 +401,7 @@ export default function Home() {
 
             <p className="text-xs text-slate-400">{modeHint}</p>
 
-            <div className="rounded-full border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-300">
+            <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-sm text-slate-300">
               <strong className="text-slate-100">Your Peer ID:</strong>
               <button
                 className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
@@ -414,7 +414,7 @@ export default function Home() {
           </section>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
@@ -469,7 +469,7 @@ export default function Home() {
               </div>
 
               <button
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-800"
+                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
                 onClick={() => {
                   setLogs([]);
                   pushLog("Cleared!");
@@ -483,11 +483,11 @@ export default function Home() {
               </p>
             </section>
 
-            <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+            <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
               <div
                 ref={logContainerRef}
-                className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs"
+                className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
               >
                 {logs.map((row) => (
                   <div key={row.id} className={row.error ? "text-rose-400" : "text-slate-200"}>
@@ -499,10 +499,10 @@ export default function Home() {
           </div>
         </main>
 
-        <main className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/85 p-5 backdrop-blur">
+        <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Call</h1>
 
-          <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+          <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -515,20 +515,20 @@ export default function Home() {
             </div>
 
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-700 bg-slate-950 p-2">
+              <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
                 <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Send</h3>
-                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-slate-950" />
+                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" />
               </div>
-              <div className="rounded-lg border border-slate-700 bg-slate-950 p-2">
+              <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
                 <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Receive</h3>
-                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-slate-950" />
+                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" />
               </div>
             </div>
 
             <p className="mt-3 text-xs text-slate-400">Secured Network</p>
           </section>
 
-          <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+          <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">File Transfer</h2>
             <div className="mt-3 space-y-2">
               <input ref={fileInputRef} className={inputClass} type="file" multiple />
