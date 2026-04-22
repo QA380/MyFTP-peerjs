@@ -350,11 +350,11 @@ export default function Home() {
         <main className="rounded-2xl border border-slate-800 bg-slate-900/85 p-5 shadow-2xl shadow-black/40 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
           <p className="mt-2 text-sm text-slate-300">
-            Connect, transfer files or folders, and place audio or video calls from one place.
+            Connect | transfer files/folders | calls
           </p>
 
           <section className="mt-4 space-y-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-[100px_minmax(0,1fr)_120px_120px]">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
               <select
                 className={inputClass}
                 value={mode}
