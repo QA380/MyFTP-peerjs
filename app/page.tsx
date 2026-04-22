@@ -354,7 +354,7 @@ export default function Home() {
           </p>
 
           <section className="mt-4 space-y-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-[100px_minmax(0,1fr)_120px_120px]">
               <select
                 className={inputClass}
                 value={mode}
