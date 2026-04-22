@@ -347,7 +347,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_right,_#1e3a8a_0%,_#0f172a_45%)] px-4 py-8 text-slate-100 sm:px-6">
       <div className="mx-auto grid w-full max-w-7xl gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <main className="rounded-2xl border border-slate-800 bg-slate-900/85 p-5 shadow-2xl shadow-black/40 backdrop-blur">
+        <main className="rounded-2xl border border-slate-800 bg-slate-900/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
           <p className="mt-2 text-sm text-slate-300">
             Connect | transfer files/folders | calls
@@ -499,7 +499,7 @@ export default function Home() {
           </div>
         </main>
 
-        <main className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/85 p-5 shadow-2xl shadow-black/40 backdrop-blur">
+        <main className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Call</h1>
 
           <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
