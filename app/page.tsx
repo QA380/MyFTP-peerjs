@@ -472,8 +472,12 @@ export default function Home() {
   }, [myId, pushLog]);
 
   useEffect(() => {
-    makePeer();
+    const peerInitTimer = window.setTimeout(() => {
+      makePeer();
+    }, 0);
+
     return () => {
+      window.clearTimeout(peerInitTimer);
       stopStream(localStreamRef.current);
       mediaConnRef.current?.close();
       activeConnRef.current?.close();
@@ -535,7 +539,7 @@ export default function Home() {
 
       updateLevel();
     } catch {
-      setAudioLevel(0);
+      // If audio context setup fails, keep visualizer at its last known state.
     }
 
     return () => {
