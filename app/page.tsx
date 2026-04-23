@@ -838,7 +838,7 @@ export default function Home() {
                   textClass = "text-[#0069d1]";
                 }
                 // Sent messages = dark cyan
-                else if(row.txt.includes("Sent:")){
+                else if(row.text.includes("Sent:")){
                   textClass = "text-[#0096ad]"
                 }
                 // All remaining chat/log rows keep the default text color. (it's white)
