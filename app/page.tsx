@@ -23,6 +23,15 @@ type SelectionInfo = {
   ready: boolean;
 };
 
+type InboxItem = {
+  id: string;
+  source: "Files" | "Folder";
+  name: string;
+  size: number;
+  mime: string;
+  url: string;
+};
+
 const formatBytes = (bytes: number): string => {
   if (bytes <= 0) {
     return "0 B";
@@ -60,6 +69,7 @@ export default function Home() {
   const [streamVersion, setStreamVersion] = useState(0);
   const [fileSelection, setFileSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
   const [folderSelection, setFolderSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
 
   const peerRef = useRef<Peer | null>(null);
   const activeConnRef = useRef<DataConnection | null>(null);
@@ -75,6 +85,8 @@ export default function Home() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const incomingTransferLabelRef = useRef<"Files" | "Folder">("Files");
+  const inboxItemsRef = useRef<InboxItem[]>([]);
 
   const modeHint = useMemo(
     () => "For local mode, use host localhost, port 9000, path /myapp, secure false.",
@@ -191,6 +203,65 @@ export default function Home() {
     };
   }, []);
 
+  const extractArrayBuffer = useCallback((payload: unknown): ArrayBuffer | null => {
+    if (payload instanceof ArrayBuffer) {
+      return payload;
+    }
+
+    if (payload instanceof Uint8Array) {
+      return payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+    }
+
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "type" in payload &&
+      "data" in payload &&
+      (payload as { type?: string }).type === "Buffer" &&
+      Array.isArray((payload as { data?: unknown }).data)
+    ) {
+      const bytes = new Uint8Array((payload as { data: number[] }).data);
+      return bytes.buffer;
+    }
+
+    return null;
+  }, []);
+
+  const clearSelectedUpload = useCallback((label: "file" | "folder") => {
+    if (label === "file") {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      setFileSelection({ count: 0, totalBytes: 0, ready: false });
+      pushLog("Removed uploaded file selection.");
+      return;
+    }
+
+    if (folderInputRef.current) {
+      folderInputRef.current.value = "";
+    }
+    setFolderSelection({ count: 0, totalBytes: 0, ready: false });
+    pushLog("Removed uploaded folder selection.");
+  }, [pushLog]);
+
+  const clearInbox = useCallback(() => {
+    inboxItemsRef.current.forEach((item) => {
+      URL.revokeObjectURL(item.url);
+    });
+    setInboxItems([]);
+    pushLog("Cleared received inbox.");
+  }, [pushLog]);
+
+  const removeInboxItem = useCallback((id: string) => {
+    setInboxItems((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target) {
+        URL.revokeObjectURL(target.url);
+      }
+      return prev.filter((item) => item.id !== id);
+    });
+  }, []);
+
   const wireConnection = useCallback(
     (conn: DataConnection) => {
       activeConnRef.current = conn;
@@ -198,8 +269,58 @@ export default function Home() {
       pushLog(`Connection opened with ${conn.peer}`);
 
       conn.on("data", (data) => {
-        const text = typeof data === "string" ? data : JSON.stringify(data);
-        pushLog(`Received: ${text}`);
+        if (typeof data === "string") {
+          pushLog(`Received: ${data}`);
+          return;
+        }
+
+        if (typeof data === "object" && data !== null && "kind" in data) {
+          const payload = data as {
+            kind?: string;
+            label?: "Files" | "Folder";
+            count?: number;
+            name?: string;
+            mime?: string;
+            size?: number;
+            data?: unknown;
+          };
+
+          if (payload.kind === "transfer-start") {
+            const source = payload.label === "Folder" ? "Folder" : "Files";
+            incomingTransferLabelRef.current = source;
+            pushLog(`Incoming ${source.toLowerCase()} transfer: ${payload.count ?? 0} item(s).`);
+            return;
+          }
+
+          if (payload.kind === "file") {
+            const buffer = extractArrayBuffer(payload.data);
+            if (!buffer) {
+              pushLog(`Received file metadata but could not parse binary data for ${payload.name ?? "unknown"}.`, true);
+              return;
+            }
+
+            const mime = payload.mime || "application/octet-stream";
+            const blob = new Blob([buffer], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const size = typeof payload.size === "number" ? payload.size : blob.size;
+
+            setInboxItems((prev) => [
+              {
+                id: `${Date.now()}-${Math.random()}`,
+                source: incomingTransferLabelRef.current,
+                name: payload.name || "unnamed-file",
+                size,
+                mime,
+                url,
+              },
+              ...prev,
+            ]);
+            pushLog(`Received file ready in inbox: ${payload.name || "unnamed-file"} (${formatBytes(size)}).`);
+            return;
+          }
+        }
+
+        pushLog(`Received: ${JSON.stringify(data)}`);
       });
 
       conn.on("close", () => {
@@ -212,7 +333,7 @@ export default function Home() {
         pushLog(`Connection error: ${err.message || err}`, true);
       });
     },
-    [pushLog]
+    [extractArrayBuffer, pushLog]
   );
 
   const makePeer = useCallback(() => {
@@ -484,6 +605,9 @@ export default function Home() {
       peerRef.current?.destroy();
       stopAudioMeter();
       clearMediaStreams();
+      inboxItemsRef.current.forEach((item) => {
+        URL.revokeObjectURL(item.url);
+      });
     };
   }, [clearMediaStreams, makePeer, stopAudioMeter, stopStream]);
 
@@ -492,6 +616,10 @@ export default function Home() {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
+
+  useEffect(() => {
+    inboxItemsRef.current = inboxItems;
+  }, [inboxItems]);
 
   useEffect(() => {
     if (folderInputRef.current) {
@@ -828,9 +956,70 @@ export default function Home() {
                 </button>
               </div>
 
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                  onClick={() => clearSelectedUpload("file")}
+                  type="button"
+                >
+                  Remove Files Upload
+                </button>
+                <button
+                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                  onClick={() => clearSelectedUpload("folder")}
+                  type="button"
+                >
+                  Remove Folder Upload
+                </button>
+              </div>
+
               <p className="text-xs text-slate-400">
                 Pick files or a folder, then send them over the active data connection.
               </p>
+
+              <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">Received Inbox</h3>
+                  <button
+                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
+                    onClick={clearInbox}
+                    type="button"
+                  >
+                    Clear Inbox
+                  </button>
+                </div>
+
+                {inboxItems.length === 0 ? (
+                  <p className="text-xs text-slate-400">No received files/folders yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {inboxItems.map((item) => (
+                      <div key={item.id} className="rounded-lg border border-slate-700 bg-[#030712]/70 p-2 text-xs">
+                        <p className="font-medium text-slate-200">{item.name}</p>
+                        <p className="text-slate-400">
+                          {item.source} | {formatBytes(item.size)}
+                        </p>
+                        <div className="mt-2 flex gap-2">
+                          <a
+                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+                            href={item.url}
+                            download={item.name}
+                          >
+                            Download
+                          </a>
+                          <button
+                            className="rounded-lg border border-slate-600 px-2 py-1 font-semibold text-slate-200 transition hover:bg-[#111827]"
+                            onClick={() => removeInboxItem(item.id)}
+                            type="button"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         </main>
