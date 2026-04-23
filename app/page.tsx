@@ -1,6 +1,6 @@
 "use client";
 
-import  { SpeedInsights } from "@vercel/speed-insights/next"
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import Peer, { DataConnection, MediaConnection } from "peerjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -71,6 +71,27 @@ type ActiveInboxTransfer = {
   totalChunks: number;
 };
 
+type ActiveOutgoingTransfer = {
+  id: string;
+  source: "Files" | "Folder";
+  name: string;
+  size: number;
+  sentBytes: number;
+  startedAt: number;
+  lastTick: number;
+  totalChunks: number;
+};
+
+type OutgoingItem = {
+  id: string;
+  source: "Files" | "Folder";
+  name: string;
+  size: number;
+  progress: number;
+  rate: number;
+  complete: boolean;
+};
+
 const formatBytes = (bytes: number): string => {
   if (bytes <= 0) {
     return "0 B";
@@ -110,6 +131,7 @@ export default function Home() {
   const [fileSelection, setFileSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
   const [folderSelection, setFolderSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
 
   const peerRef = useRef<Peer | null>(null);
   const activeConnRef = useRef<DataConnection | null>(null);
@@ -128,6 +150,8 @@ export default function Home() {
   const incomingTransferLabelRef = useRef<"Files" | "Folder">("Files");
   const inboxItemsRef = useRef<InboxItem[]>([]);
   const activeInboxTransfersRef = useRef<Map<string, ActiveInboxTransfer>>(new Map());
+  const sendingTransfersRef = useRef<Map<string, ActiveOutgoingTransfer>>(new Map());
+  const sendingItemsRef = useRef<OutgoingItem[]>([]);
 
   const modeHint = useMemo(
     () => "For local mode, use host localhost, port 9000, path /myapp, secure false.",
@@ -289,6 +313,70 @@ export default function Home() {
         ? { ...item, progress, rate, complete: false, size: transfer.size, mime: transfer.mime, name: transfer.name, source: transfer.source }
         : item
     )));
+  }, []);
+
+  const beginOutgoingTransfer = useCallback(
+    (transferId: string, source: "Files" | "Folder", name: string, size: number, totalChunks: number) => {
+      sendingTransfersRef.current.set(transferId, {
+        id: transferId,
+        source,
+        name,
+        size,
+        sentBytes: 0,
+        startedAt: Date.now(),
+        lastTick: Date.now(),
+        totalChunks,
+      });
+
+      setSendingItems((prev) => [
+        {
+          id: transferId,
+          source,
+          name,
+          size,
+          progress: 0,
+          rate: 0,
+          complete: false,
+        },
+        ...prev,
+      ]);
+    },
+    []
+  );
+
+  const updateOutgoingTransferProgress = useCallback(
+    (transferId: string, chunkSize: number) => {
+      const transfer = sendingTransfersRef.current.get(transferId);
+      if (!transfer) return;
+
+      transfer.sentBytes += chunkSize;
+      const elapsedMs = Math.max(Date.now() - transfer.startedAt, 1);
+      const bytesPerSecond = (transfer.sentBytes / elapsedMs) * 1000;
+      const progress = transfer.sentBytes / transfer.size;
+      const complete = transfer.sentBytes >= transfer.size;
+
+      setSendingItems((prev) =>
+        prev.map((item) =>
+          item.id === transferId
+            ? { ...item, progress, rate: bytesPerSecond, complete }
+            : item
+        )
+      );
+
+      if (complete) {
+        sendingTransfersRef.current.delete(transferId);
+      }
+    },
+    []
+  );
+
+  const flushOutgoingTransfer = useCallback((transferId: string) => {
+    sendingTransfersRef.current.delete(transferId);
+    setSendingItems((prev) =>
+      prev.map((item) =>
+        item.id === transferId ? { ...item, complete: true } : item
+      )
+    );
   }, []);
 
   const beginInboxTransfer = useCallback((payload: FileTransferStart) => {
@@ -591,6 +679,23 @@ export default function Home() {
     conn.on("open", () => wireConnection(conn));
   }, [pushLog, targetId, wireConnection]);
 
+  const disconnectFromTarget = useCallback(() => {
+    if (!activeConnRef.current) {
+      pushLog("No active connection to disconnect.", true);
+      return;
+    }
+
+    try {
+      activeConnRef.current.close();
+    } catch (err) {
+      pushLog(`Disconnect warning: ${String(err)}`, true);
+    }
+
+    activeConnRef.current = null;
+    setConnState("Not connected");
+    pushLog("Disconnected from peer.");
+  }, [pushLog]);
+
   const sendCurrentMessage = useCallback(() => {
     if (!requireConnection()) {
       return;
@@ -624,6 +729,8 @@ export default function Home() {
         const transferId = `${Date.now()}-${Math.random()}`;
         const chunks = chunkArrayBuffer(payload.data);
 
+        beginOutgoingTransfer(transferId, label, payload.name, payload.size, chunks.length);
+
         activeConnRef.current?.send({
           kind: "file-start",
           transferId,
@@ -635,12 +742,15 @@ export default function Home() {
         } satisfies FileTransferStart);
 
         for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = chunks[index];
           activeConnRef.current?.send({
             kind: "file-chunk",
             transferId,
             index,
-            data: chunks[index],
+            data: chunk,
           } satisfies FileTransferChunk);
+
+          updateOutgoingTransferProgress(transferId, chunk.byteLength);
 
           // Yield between chunks so chat messages stay responsive while files are sending.
           // This also reduces blocking on the shared PeerJS data channel.
@@ -652,12 +762,21 @@ export default function Home() {
           transferId,
         } satisfies FileTransferEnd);
 
+        flushOutgoingTransfer(transferId);
         pushLog(`Sent ${label.toLowerCase()}: ${payload.name} (${formatBytes(payload.size)})`);
       }
 
       pushLog(`${label} upload complete. ${payloads.length} item(s) sent successfully.`);
     },
-    [chunkArrayBuffer, pushLog, readFilesAsPayloads, requireConnection]
+    [
+      beginOutgoingTransfer,
+      chunkArrayBuffer,
+      flushOutgoingTransfer,
+      pushLog,
+      readFilesAsPayloads,
+      requireConnection,
+      updateOutgoingTransferProgress,
+    ]
   );
 
   const startCall = useCallback(
@@ -810,6 +929,10 @@ export default function Home() {
   }, [inboxItems]);
 
   useEffect(() => {
+    sendingItemsRef.current = sendingItems;
+  }, [sendingItems]);
+
+  useEffect(() => {
     if (folderInputRef.current) {
       folderInputRef.current.setAttribute("webkitdirectory", "");
       folderInputRef.current.setAttribute("directory", "");
@@ -865,6 +988,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#030712] px-4 py-8 text-slate-100 sm:px-6">
+      <SpeedInsights />
       <div className="mx-auto grid w-full max-w-7xl gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
         <main className="rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
@@ -947,12 +1071,29 @@ export default function Home() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
-                      connectToTarget();
+                      if (connState === "Not connected") {
+                        connectToTarget();
+                      } else {
+                        disconnectFromTarget();
+                      }
                     }
                   }}
                 />
-                <button className={buttonClass} onClick={connectToTarget}>
-                  Connect
+                <button
+                  className={
+                    connState === "Not connected"
+                      ? buttonClass
+                      : "rounded-xl border border-rose-500/50 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
+                  }
+                  onClick={() => {
+                    if (connState === "Not connected") {
+                      connectToTarget();
+                    } else {
+                      disconnectFromTarget();
+                    }
+                  }}
+                >
+                  {connState === "Not connected" ? "Connect" : "Disconnect"}
                 </button>
               </div>
 
@@ -1185,6 +1326,37 @@ export default function Home() {
               <p className="text-xs text-slate-400">
                 Pick files or a folder, then send them over the active data connection.
               </p>
+
+              <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Sending Transfers</h3>
+
+                {sendingItems.length === 0 ? (
+                  <p className="text-xs text-slate-400">No active transfers.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {sendingItems.map((item) => (
+                      <div key={item.id} className="rounded-lg border border-slate-700 bg-[#030712]/70 p-2 text-xs">
+                        <p className="font-medium text-slate-200">{item.name}</p>
+                        <p className="text-slate-400">
+                          {item.source} | {formatBytes(item.size)}
+                        </p>
+                        <p className="text-slate-400">
+                          Transfer rate: {formatBytes(Math.max(item.rate, 0))}/s
+                        </p>
+                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+                          <div
+                            className="h-full rounded-full bg-green-500 transition-all duration-150"
+                            style={{ width: `${Math.min(Math.max(item.progress * 100, 0), 100)}%` }}
+                          />
+                        </div>
+                        <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
+                          {item.complete ? "Transfer complete." : `Sending... ${Math.round(item.progress * 100)}%`}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
