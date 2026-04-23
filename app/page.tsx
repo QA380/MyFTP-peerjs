@@ -738,7 +738,7 @@ export default function Home() {
 
               <p className="text-xs text-slate-400">{modeHint}</p>
 
-              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-sm text-slate-300">
+              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300">
                 <strong className="text-slate-100">Peer ID:</strong>
                 <button
                   className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
