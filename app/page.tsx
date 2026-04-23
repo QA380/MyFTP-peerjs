@@ -829,7 +829,8 @@ export default function Home() {
               {logs.map((row) => (
                 <div
                   key={row.id}
-                  className={row.error ? "text-rose-400" : row.text.includes("Received:") ? "text-[#00d659]" : "text-slate-200"}
+                  // Error logs stay red, incoming messages use the requested green, and everything else uses the default text color.
+                  className={row.error ? "text-rose-400" : row.text.includes("Received:") ? "text-[#0069d1]" : "text-slate-200"}
                 >
                   {row.text}
                 </div>
