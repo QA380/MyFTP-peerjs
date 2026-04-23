@@ -826,15 +826,29 @@ export default function Home() {
               ref={logContainerRef}
               className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
             >
-              {logs.map((row) => (
-                <div
-                  key={row.id}
-                  // Error logs stay red, incoming messages use the requested green, and everything else uses the default text color.
-                  className={row.error ? "text-rose-400" : row.text.includes("Received:") ? "text-[#0069d1]" : "text-slate-200"}
-                >
-                  {row.text}
-                </div>
-              ))}
+              {logs.map((row) => {
+                let textClass = "text-slate-200";
+
+                // Error logs = red
+                if (row.error) {
+                  textClass = "text-rose-400";
+                }
+                // Received messages = blue
+                else if (row.text.includes("Received:")) {
+                  textClass = "text-[#0069d1]";
+                }
+                // Sent messages = dark cyan
+                else if(row.txt.includes("Sent:")){
+                  textClass = "text-[#0096ad]"
+                }
+                // All remaining chat/log rows keep the default text color. (it's white)
+
+                return (
+                  <div key={row.id} className={textClass}>
+                    {row.text}
+                  </div>
+                );
+              })}
             </div>
           </section>
         </main>
