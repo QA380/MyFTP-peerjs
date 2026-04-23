@@ -154,7 +154,7 @@ export default function Home() {
   const sendingItemsRef = useRef<OutgoingItem[]>([]);
 
   const modeHint = useMemo(
-    () => "For local mode, use host localhost, port 9000, path /myapp, secure false.",
+    () => "For localhost, use port 9000, path /myapp, secure false.",
     []
   );
 
