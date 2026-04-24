@@ -18,18 +18,15 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 **This project was inspired from [filepizza](https://github.com/kern/filepizza)**
 
 ## Notes
-Todos:
+**Todos:**
  *   Improve UI
       - Improve color theme (visual)
       - Improve visual background (visual)
  *   Add top bar (functional)
       - Add: Home | X | X |
+
+ **Fix:**
+ * Inbox received double the notifaction for single file
+ * Toggling audio-video reset the connection
  * 
  * 
- * 
- * Fix:
- * - Inbox received double the notifaction for single file
- * - Toggling audio-video reset the connection
- * - 
- * 
- */
