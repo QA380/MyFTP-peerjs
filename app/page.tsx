@@ -10,14 +10,6 @@ type LogRow = {
   error: boolean;
 };
 
-type FilePayload = {
-  kind: "file";
-  name: string;
-  mime: string;
-  size: number;
-  data: ArrayBuffer;
-};
-
 type SelectionInfo = {
   count: number;
   totalBytes: number;
@@ -110,6 +102,42 @@ const inputClass =
 const buttonClass =
   "rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400";
 const FILE_CHUNK_SIZE = 64 * 1024;
+const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
+const BUFFER_CHECK_INTERVAL_MS = 10;
+
+type WorkerInboundMessage = {
+  type: "prepare-file";
+  transferId: string;
+  source: "Files" | "Folder";
+  file: File;
+  chunkSize: number;
+};
+
+type WorkerOutboundMessage =
+  | {
+      type: "prepared-start";
+      transferId: string;
+      source: "Files" | "Folder";
+      name: string;
+      mime: string;
+      size: number;
+      totalChunks: number;
+    }
+  | {
+      type: "prepared-chunk";
+      transferId: string;
+      index: number;
+      data: ArrayBuffer;
+    }
+  | {
+      type: "prepared-end";
+      transferId: string;
+    }
+  | {
+      type: "prepared-error";
+      transferId: string;
+      message: string;
+    };
 
 export default function Home() {
   const [mode, setMode] = useState<"cloud" | "local">("cloud");
@@ -152,6 +180,12 @@ export default function Home() {
   const activeInboxTransfersRef = useRef<Map<string, ActiveInboxTransfer>>(new Map());
   const sendingTransfersRef = useRef<Map<string, ActiveOutgoingTransfer>>(new Map());
   const sendingItemsRef = useRef<OutgoingItem[]>([]);
+  const transferWorkerRef = useRef<Worker | null>(null);
+  const workerQueueRef = useRef<WorkerOutboundMessage[]>([]);
+  const workerQueueRunningRef = useRef(false);
+  const transferPromisesRef = useRef<
+    Map<string, { resolve: () => void; reject: (error: Error) => void }>
+  >(new Map());
 
   const modeHint = useMemo(
     () => "For localhost, use port 9000, path /myapp, secure false.",
@@ -231,41 +265,50 @@ export default function Home() {
     return true;
   }, [pushLog]);
 
-  const readFilesAsPayloads = useCallback(
-    (files: FileList) =>
-      Promise.all(
-        Array.from(files).map(
-          (file) =>
-            new Promise<FilePayload>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                resolve({
-                  kind: "file",
-                  name: file.webkitRelativePath || file.name,
-                  mime: file.type || "application/octet-stream",
-                  size: file.size,
-                  data: reader.result as ArrayBuffer,
-                });
-              };
-              reader.onerror = () => reject(reader.error);
-              reader.readAsArrayBuffer(file);
-            })
-        )
-      ),
-    []
+  const getRtcDataChannel = useCallback((conn: DataConnection | null): RTCDataChannel | null => {
+    if (!conn) {
+      return null;
+    }
+
+    const candidate = conn as DataConnection & {
+      dataChannel?: RTCDataChannel;
+      _dc?: RTCDataChannel;
+    };
+
+    return candidate.dataChannel ?? candidate._dc ?? null;
+  }, []);
+
+  const waitForBufferedDrain = useCallback(
+    async (conn: DataConnection | null) => {
+      const channel = getRtcDataChannel(conn);
+      if (!channel) {
+        return;
+      }
+
+      while (channel.readyState === "open" && channel.bufferedAmount > BUFFER_HIGH_WATERMARK) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, BUFFER_CHECK_INTERVAL_MS));
+      }
+    },
+    [getRtcDataChannel]
   );
 
-  const chunkArrayBuffer = useCallback((buffer: ArrayBuffer): ArrayBuffer[] => {
-    if (buffer.byteLength <= FILE_CHUNK_SIZE) {
-      return [buffer];
+  const isLikelyCompressed = useCallback((name: string, mime: string) => {
+    const lower = name.toLowerCase();
+    if (
+      lower.endsWith(".zip") ||
+      lower.endsWith(".rar") ||
+      lower.endsWith(".7z") ||
+      lower.endsWith(".gz") ||
+      lower.endsWith(".jpg") ||
+      lower.endsWith(".jpeg") ||
+      lower.endsWith(".png") ||
+      lower.endsWith(".mp3") ||
+      lower.endsWith(".mp4")
+    ) {
+      return true;
     }
 
-    const chunks: ArrayBuffer[] = [];
-    for (let offset = 0; offset < buffer.byteLength; offset += FILE_CHUNK_SIZE) {
-      chunks.push(buffer.slice(offset, Math.min(offset + FILE_CHUNK_SIZE, buffer.byteLength)));
-    }
-
-    return chunks;
+    return mime.includes("zip") || mime.includes("audio/") || mime.includes("video/") || mime.startsWith("image/");
   }, []);
 
   const flushInboxTransfer = useCallback((transferId: string) => {
@@ -378,6 +421,85 @@ export default function Home() {
       )
     );
   }, []);
+
+  const processWorkerMessage = useCallback(
+    async (payload: WorkerOutboundMessage) => {
+      if (payload.type === "prepared-error") {
+        transferPromisesRef.current.get(payload.transferId)?.reject(new Error(payload.message));
+        transferPromisesRef.current.delete(payload.transferId);
+        sendingTransfersRef.current.delete(payload.transferId);
+        setSendingItems((prev) => prev.map((item) => (
+          item.id === payload.transferId ? { ...item, complete: true } : item
+        )));
+        pushLog(`Worker error for transfer ${payload.transferId}: ${payload.message}`, true);
+        return;
+      }
+
+      const conn = activeConnRef.current;
+      if (!conn || !conn.open) {
+        transferPromisesRef.current.get(payload.transferId)?.reject(new Error("Connection closed during transfer"));
+        transferPromisesRef.current.delete(payload.transferId);
+        return;
+      }
+
+      if (payload.type === "prepared-start") {
+        conn.send({
+          kind: "file-start",
+          transferId: payload.transferId,
+          source: payload.source,
+          name: payload.name,
+          mime: payload.mime,
+          size: payload.size,
+          totalChunks: payload.totalChunks,
+        } satisfies FileTransferStart);
+        return;
+      }
+
+      if (payload.type === "prepared-chunk") {
+        await waitForBufferedDrain(conn);
+        conn.send({
+          kind: "file-chunk",
+          transferId: payload.transferId,
+          index: payload.index,
+          data: payload.data,
+        } satisfies FileTransferChunk);
+        updateOutgoingTransferProgress(payload.transferId, payload.data.byteLength);
+        return;
+      }
+
+      if (payload.type === "prepared-end") {
+        await waitForBufferedDrain(conn);
+        conn.send({
+          kind: "file-end",
+          transferId: payload.transferId,
+        } satisfies FileTransferEnd);
+
+        flushOutgoingTransfer(payload.transferId);
+        transferPromisesRef.current.get(payload.transferId)?.resolve();
+        transferPromisesRef.current.delete(payload.transferId);
+      }
+    },
+    [flushOutgoingTransfer, pushLog, updateOutgoingTransferProgress, waitForBufferedDrain]
+  );
+
+  const drainWorkerQueue = useCallback(async () => {
+    if (workerQueueRunningRef.current) {
+      return;
+    }
+
+    workerQueueRunningRef.current = true;
+    try {
+      while (workerQueueRef.current.length > 0) {
+        const payload = workerQueueRef.current.shift();
+        if (!payload) {
+          continue;
+        }
+        await processWorkerMessage(payload);
+      }
+    } finally {
+      workerQueueRunningRef.current = false;
+    }
+  }, [processWorkerMessage]);
 
   const beginInboxTransfer = useCallback((payload: FileTransferStart) => {
     const exists = activeInboxTransfersRef.current.get(payload.transferId);
@@ -496,6 +618,12 @@ export default function Home() {
       activeConnRef.current = conn;
       setConnState(`Connected to ${conn.peer}`);
       pushLog(`Connection opened with ${conn.peer}`);
+      if (conn.serialization !== "raw") {
+        pushLog(
+          `Connection serialization is ${conn.serialization}; for large file throughput prefer raw/none serialization.`,
+          true
+        );
+      }
 
       conn.on("data", (data) => {
         if (typeof data === "string") {
@@ -578,7 +706,7 @@ export default function Home() {
         pushLog(`Connection error: ${err.message || err}`, true);
       });
     },
-    [extractArrayBuffer, pushLog]
+    [beginInboxTransfer, extractArrayBuffer, flushInboxTransfer, pushLog, updateInboxTransferProgress]
   );
 
   const makePeer = useCallback(() => {
@@ -599,9 +727,38 @@ export default function Home() {
       port: Number(port.trim() || 443),
       path: path.trim() || "/",
       secure: secure.trim().toLowerCase() !== "false",
+      config: {
+        iceServers: [
+          {
+            urls: [
+              "stun:stun.l.google.com:19302",
+              "stun:stun1.l.google.com:19302",
+              "stun:stun.cloudflare.com:3478",
+            ],
+          },
+          ...(process.env.NEXT_PUBLIC_TURN_URL
+            ? [
+                {
+                  urls: process.env.NEXT_PUBLIC_TURN_URL,
+                  username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+                  credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+                },
+              ]
+            : []),
+        ],
+        iceTransportPolicy: "all" as RTCIceTransportPolicy,
+      },
     };
 
-    pushLog(`Connecting with ${JSON.stringify(options)}`);
+    pushLog(
+      `Connecting with ${JSON.stringify({
+        host: options.host,
+        port: options.port,
+        path: options.path,
+        secure: options.secure,
+        hasTurnServer: Boolean(process.env.NEXT_PUBLIC_TURN_URL),
+      })}`
+    );
     const peer = new Peer(options);
     peerRef.current = peer;
 
@@ -675,7 +832,13 @@ export default function Home() {
       return;
     }
 
-    const conn = peerRef.current.connect(trimmed);
+    const conn = peerRef.current.connect(trimmed, {
+      reliable: true,
+      serialization: "raw",
+      metadata: {
+        transferProfile: "raw-binary-v1",
+      },
+    });
     conn.on("open", () => wireConnection(conn));
   }, [pushLog, targetId, wireConnection]);
 
@@ -723,59 +886,52 @@ export default function Home() {
         return;
       }
 
-      const payloads = await readFilesAsPayloads(files);
-
-      for (const payload of payloads) {
-        const transferId = `${Date.now()}-${Math.random()}`;
-        const chunks = chunkArrayBuffer(payload.data);
-
-        beginOutgoingTransfer(transferId, label, payload.name, payload.size, chunks.length);
-
-        activeConnRef.current?.send({
-          kind: "file-start",
-          transferId,
-          source: label,
-          name: payload.name,
-          mime: payload.mime,
-          size: payload.size,
-          totalChunks: chunks.length,
-        } satisfies FileTransferStart);
-
-        for (let index = 0; index < chunks.length; index += 1) {
-          const chunk = chunks[index];
-          activeConnRef.current?.send({
-            kind: "file-chunk",
-            transferId,
-            index,
-            data: chunk,
-          } satisfies FileTransferChunk);
-
-          updateOutgoingTransferProgress(transferId, chunk.byteLength);
-
-          // Yield between chunks so chat messages stay responsive while files are sending.
-          // This also reduces blocking on the shared PeerJS data channel.
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-        }
-
-        activeConnRef.current?.send({
-          kind: "file-end",
-          transferId,
-        } satisfies FileTransferEnd);
-
-        flushOutgoingTransfer(transferId);
-        pushLog(`Sent ${label.toLowerCase()}: ${payload.name} (${formatBytes(payload.size)})`);
+      const worker = transferWorkerRef.current;
+      if (!worker) {
+        pushLog("Transfer worker is not ready yet. Please retry in a second.", true);
+        return;
       }
 
-      pushLog(`${label} upload complete. ${payloads.length} item(s) sent successfully.`);
+      activeConnRef.current?.send({
+        kind: "transfer-start",
+        label,
+        count: files.length,
+      });
+
+      for (const file of Array.from(files)) {
+        const transferId = `${Date.now()}-${Math.random()}`;
+        const mime = file.type || "application/octet-stream";
+        const fileName = file.webkitRelativePath || file.name;
+
+        if (isLikelyCompressed(fileName, mime)) {
+          pushLog(`Skipping app-level compression for ${fileName}; file is already compressed or media.`);
+        }
+
+        beginOutgoingTransfer(transferId, label, fileName, file.size, Math.ceil(file.size / FILE_CHUNK_SIZE));
+
+        const completion = new Promise<void>((resolve, reject) => {
+          transferPromisesRef.current.set(transferId, { resolve, reject });
+        });
+
+        worker.postMessage({
+          type: "prepare-file",
+          transferId,
+          source: label,
+          file,
+          chunkSize: FILE_CHUNK_SIZE,
+        } satisfies WorkerInboundMessage);
+
+        await completion;
+        pushLog(`Sent ${label.toLowerCase()}: ${fileName} (${formatBytes(file.size)})`);
+      }
+
+      pushLog(`${label} upload complete. ${files.length} item(s) sent successfully.`);
     },
     [
       beginOutgoingTransfer,
-      chunkArrayBuffer,
-      flushOutgoingTransfer,
+      isLikelyCompressed,
       pushLog,
-      readFilesAsPayloads,
       requireConnection,
-      updateOutgoingTransferProgress,
     ]
   );
 
@@ -896,6 +1052,27 @@ export default function Home() {
       pushLog(`Could not copy peer ID: ${String(err)}`, true);
     }
   }, [myId, pushLog]);
+
+  useEffect(() => {
+    const worker = new Worker("/workers/transfer-worker.js");
+    transferWorkerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent<WorkerOutboundMessage>) => {
+      workerQueueRef.current.push(event.data);
+      void drainWorkerQueue();
+    };
+
+    worker.onerror = (event) => {
+      pushLog(`Transfer worker failed: ${event.message}`, true);
+    };
+
+    return () => {
+      transferWorkerRef.current?.terminate();
+      transferWorkerRef.current = null;
+      workerQueueRef.current = [];
+      transferPromisesRef.current.clear();
+    };
+  }, [drainWorkerQueue, pushLog]);
 
   useEffect(() => {
     const peerInitTimer = window.setTimeout(() => {
@@ -1046,6 +1223,9 @@ export default function Home() {
               </div>
 
               <p className="text-xs text-slate-400">{modeHint}</p>
+              <p className="text-xs text-slate-500">
+                Direct P2P is preferred via STUN. Set NEXT_PUBLIC_TURN_URL, NEXT_PUBLIC_TURN_USERNAME, and NEXT_PUBLIC_TURN_CREDENTIAL only when relay is required.
+              </p>
 
               <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300">
                 <strong className="text-slate-100">Peer ID:</strong>
@@ -1325,6 +1505,9 @@ export default function Home() {
 
               <p className="text-xs text-slate-400">
                 Pick files or a folder, then send them over the active data connection.
+              </p>
+              <p className="text-xs text-slate-500">
+                Performance tip: keep this tab in the foreground and disable battery-saver modes for best sustained transfer speed.
               </p>
 
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
