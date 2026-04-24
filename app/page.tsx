@@ -10,12 +10,14 @@ type LogRow = {
   error: boolean;
 };
 
+// Uploaded files or folders information
 type SelectionInfo = {
   count: number;
   totalBytes: number;
   ready: boolean;
 };
 
+// Inbox entry for a finished incoming transfer
 type InboxItem = {
   id: string;
   source: "Files" | "Folder";
@@ -28,6 +30,7 @@ type InboxItem = {
   complete: boolean;
 };
 
+// Incoming file transfer information
 type FileTransferStart = {
   kind: "file-start";
   transferId: string;
@@ -38,6 +41,7 @@ type FileTransferStart = {
   totalChunks: number;
 };
 
+// Raw binary chunk sent after a chunk meta frame
 type FileTransferChunk = {
   kind: "file-chunk";
   transferId: string;
@@ -45,11 +49,13 @@ type FileTransferChunk = {
   data: ArrayBuffer;
 };
 
+// Control frame that closes an incoming file transfer
 type FileTransferEnd = {
   kind: "file-end";
   transferId: string;
 };
 
+// Track a received transfer while chunks are still arriving
 type ActiveInboxTransfer = {
   id: string;
   source: "Files" | "Folder";
@@ -63,6 +69,7 @@ type ActiveInboxTransfer = {
   totalChunks: number;
 };
 
+// Track transfer progress
 type ActiveOutgoingTransfer = {
   id: string;
   source: "Files" | "Folder";
@@ -74,6 +81,7 @@ type ActiveOutgoingTransfer = {
   totalChunks: number;
 };
 
+// Progress row displayed for outgoing transfers
 type OutgoingItem = {
   id: string;
   source: "Files" | "Folder";
@@ -84,6 +92,7 @@ type OutgoingItem = {
   complete: boolean;
 };
 
+// Live link quality and buffering snapshot for the diagnostics panel
 type ConnectionDiagnostics = {
   dataChannelState: string;
   bufferedAmount: number;
@@ -91,6 +100,7 @@ type ConnectionDiagnostics = {
   route: "direct" | "relay" | "unknown";
 };
 
+// JSON commands to coordinate raw binary data channel
 type ControlMessage =
   | {
       kind: "chat-message";
@@ -121,12 +131,14 @@ type ControlMessage =
       transferId: string;
     };
 
+    // Pending metadata for the next raw binary chunk
 type PendingChunkMeta = {
   transferId: string;
   index: number;
   size: number;
 };
 
+// Format raw bytes into a human-friendly size label
 const formatBytes = (bytes: number): string => {
   if (bytes <= 0) {
     return "0 B";
@@ -144,10 +156,14 @@ const inputClass =
   "w-full rounded-xl border border-slate-700 bg-[#030712]/80 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400";
 const buttonClass =
   "rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400";
+// Deviding file into chunks for easier transfer
 const FILE_CHUNK_SIZE = 64 * 1024;
+// Pause sending when RTC buffering gets slow
 const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
+// Small wait used while the outbound buffer drains
 const BUFFER_CHECK_INTERVAL_MS = 10;
 
+// Convert RTT values as readable string for diagnostics panel (Connection Diagnostics)
 const formatLatency = (rttMs: number | null): string => {
   if (rttMs === null || Number.isNaN(rttMs)) {
     return "n/a";
@@ -155,6 +171,7 @@ const formatLatency = (rttMs: number | null): string => {
   return `${Math.round(rttMs)} ms`;
 };
 
+// Color-code diagnostics based on route, latency, and buffer pressure
 const diagnosticsColor = (diagnostics: ConnectionDiagnostics) => {
   const highBuffer = diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK;
   const highRtt = diagnostics.rttMs !== null && diagnostics.rttMs > 220;
@@ -170,6 +187,7 @@ const diagnosticsColor = (diagnostics: ConnectionDiagnostics) => {
   return "text-emerald-300";
 };
 
+// Message sent to log
 type WorkerInboundMessage = {
   type: "prepare-file";
   transferId: string;
@@ -178,6 +196,7 @@ type WorkerInboundMessage = {
   chunkSize: number;
 };
 
+// Message sent to log
 type WorkerOutboundMessage =
   | {
       type: "prepared-start";
@@ -205,6 +224,7 @@ type WorkerOutboundMessage =
     };
 
 export default function Home() {
+  // Connection mode and server settings
   const [mode, setMode] = useState<"cloud" | "local">("cloud");
   const [host, setHost] = useState("0.peerjs.com");
   const [port, setPort] = useState("443");
@@ -216,6 +236,7 @@ export default function Home() {
   const [sender, setSender] = useState("");
   const [connState, setConnState] = useState("Not connected");
   const [logs, setLogs] = useState<LogRow[]>([]);
+  // Call state and local capture toggles
   const [callType, setCallType] = useState<"audio" | "video" | null>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
@@ -225,6 +246,7 @@ export default function Home() {
   const [folderSelection, setFolderSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
+  // Live connection diagnostics for route and buffer health
   const [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics>({
     dataChannelState: "closed",
     bufferedAmount: 0,
@@ -237,6 +259,7 @@ export default function Home() {
   const mediaConnRef = useRef<MediaConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
+  // Telemetries
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -259,6 +282,7 @@ export default function Home() {
   >(new Map());
   const pendingChunkMetaRef = useRef<PendingChunkMeta | null>(null);
 
+  // Preloaded settings on web
   const modeHint = useMemo(
     () => "For localhost, use port 9000, path /myapp, secure false.",
     []
@@ -270,6 +294,7 @@ export default function Home() {
     setLogs((prev) => [...prev, { id: Date.now() + Math.random(), text, error }]);
   }, []);
 
+  // Camera and mic toggle
   const stopStream = useCallback((stream: MediaStream | null) => {
     if (!stream) {
       return;
@@ -277,6 +302,7 @@ export default function Home() {
     stream.getTracks().forEach((track) => track.stop());
   }, []);
 
+  // Video input
   const setLocalStream = useCallback(
     (stream: MediaStream) => {
       stopStream(localStreamRef.current);
@@ -301,6 +327,7 @@ export default function Home() {
     }
   }, []);
 
+  // Clear videos 
   const clearMediaStreams = useCallback(() => {
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
@@ -310,6 +337,7 @@ export default function Home() {
     }
   }, []);
 
+  // Reset the visual meter
   const stopAudioMeter = useCallback(() => {
     if (animationFrameRef.current !== null) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -329,6 +357,7 @@ export default function Home() {
     setAudioLevel(0);
   }, []);
 
+  // Block features that require an open data connection
   const requireConnection = useCallback(() => {
     if (!activeConnRef.current || !activeConnRef.current.open) {
       pushLog("No open connection. Connect first.", true);
@@ -337,6 +366,7 @@ export default function Home() {
     return true;
   }, [pushLog]);
 
+  // Reading RTC data channel to check bufferedAmount
   const getRtcDataChannel = useCallback((conn: DataConnection | null): RTCDataChannel | null => {
     if (!conn) {
       return null;
@@ -350,6 +380,7 @@ export default function Home() {
     return candidate.dataChannel ?? candidate._dc ?? null;
   }, []);
 
+  // Reading peer connection so diagnostics can inspect the active route
   const getRtcPeerConnection = useCallback((conn: DataConnection | null): RTCPeerConnection | null => {
     if (!conn) {
       return null;
@@ -363,6 +394,7 @@ export default function Home() {
     return candidate.peerConnection ?? candidate._pc ?? null;
   }, []);
 
+  // Wait until buffered outbound bytes fall back below the safe threshold
   const waitForBufferedDrain = useCallback(
     async (conn: DataConnection | null) => {
       const channel = getRtcDataChannel(conn);
@@ -377,6 +409,7 @@ export default function Home() {
     [getRtcDataChannel]
   );
 
+  // Detect files that are already compressed or media-like
   const isLikelyCompressed = useCallback((name: string, mime: string) => {
     const lower = name.toLowerCase();
     if (
@@ -396,10 +429,12 @@ export default function Home() {
     return mime.includes("zip") || mime.includes("audio/") || mime.includes("video/") || mime.startsWith("image/");
   }, []);
 
+  // Send a structured control frame as JSON
   const sendControlMessage = useCallback((conn: DataConnection, payload: ControlMessage) => {
     conn.send(JSON.stringify(payload));
   }, []);
 
+  // Convert text frame back into a typed control message when possible
   const parseControlMessage = useCallback((text: string): ControlMessage | null => {
     try {
       const parsed = JSON.parse(text) as { kind?: string };
@@ -422,6 +457,7 @@ export default function Home() {
     }
   }, []);
 
+  // Convert finished receiver-side transfer into a downloadable inbox item
   const flushInboxTransfer = useCallback((transferId: string) => {
     const transfer = activeInboxTransfersRef.current.get(transferId);
     if (!transfer) {
@@ -452,6 +488,7 @@ export default function Home() {
     pushLog(`Received file ready in inbox: ${transfer.name} (${formatBytes(transfer.size)}).`);
   }, [pushLog]);
 
+  // Update receiver progress card while chunks are arriving
   const updateInboxTransferProgress = useCallback((transferId: string) => {
     const transfer = activeInboxTransfersRef.current.get(transferId);
     if (!transfer) {
@@ -469,6 +506,7 @@ export default function Home() {
     )));
   }, []);
 
+  // Seed a sender-side progress card before chunks begin to flow
   const beginOutgoingTransfer = useCallback(
     (transferId: string, source: "Files" | "Folder", name: string, size: number, totalChunks: number) => {
       sendingTransfersRef.current.set(transferId, {
@@ -498,6 +536,7 @@ export default function Home() {
     []
   );
 
+  // Update sender progress bar forward after each binary chunk is sent
   const updateOutgoingTransferProgress = useCallback(
     (transferId: string, chunkSize: number) => {
       const transfer = sendingTransfersRef.current.get(transferId);
@@ -524,6 +563,7 @@ export default function Home() {
     []
   );
 
+  // Mark an outgoing transfer as complete and keep its final state visible
   const flushOutgoingTransfer = useCallback((transferId: string) => {
     sendingTransfersRef.current.delete(transferId);
     setSendingItems((prev) =>
@@ -533,6 +573,7 @@ export default function Home() {
     );
   }, []);
 
+  // Handle worker output in order so file metadata and raw chunks stay paired
   const processWorkerMessage = useCallback(
     async (payload: WorkerOutboundMessage) => {
       if (payload.type === "prepared-error") {
@@ -595,6 +636,7 @@ export default function Home() {
     [flushOutgoingTransfer, pushLog, sendControlMessage, updateOutgoingTransferProgress, waitForBufferedDrain]
   );
 
+  // Drain queued worker messages without overlapping send loops
   const drainWorkerQueue = useCallback(async () => {
     if (workerQueueRunningRef.current) {
       return;
@@ -614,6 +656,7 @@ export default function Home() {
     }
   }, [processWorkerMessage]);
 
+  // Create the receiver-side transfer record when a new file starts
   const beginInboxTransfer = useCallback((payload: FileTransferStart) => {
     const exists = activeInboxTransfersRef.current.get(payload.transferId);
     if (!exists) {
@@ -647,6 +690,7 @@ export default function Home() {
     }
   }, []);
 
+  // Summarize file selections for the upload status cards
   const summarizeSelection = useCallback((files: FileList | null): SelectionInfo => {
     if (!files || files.length === 0) {
       return { count: 0, totalBytes: 0, ready: false };
@@ -660,6 +704,7 @@ export default function Home() {
     };
   }, []);
 
+  // Convert binary-like payloads into ArrayBuffers for assembly
   const extractArrayBuffer = useCallback((payload: unknown): ArrayBuffer | null => {
     if (payload instanceof ArrayBuffer) {
       return payload;
@@ -687,6 +732,7 @@ export default function Home() {
     return null;
   }, []);
 
+  // Clear ONE upload picker and reset its summary card
   const clearSelectedUpload = useCallback((label: "file" | "folder") => {
     if (label === "file") {
       if (fileInputRef.current) {
@@ -704,6 +750,7 @@ export default function Home() {
     pushLog("Removed uploaded folder selection.");
   }, [pushLog]);
 
+  // Clear inbox
   const clearInbox = useCallback(() => {
     activeInboxTransfersRef.current.clear();
     inboxItemsRef.current.forEach((item) => {
@@ -715,6 +762,7 @@ export default function Home() {
     pushLog("Cleared received inbox.");
   }, [pushLog]);
 
+  // Remove single inbox item and revoke its download URL
   const removeInboxItem = useCallback((id: string) => {
     setInboxItems((prev) => {
       const target = prev.find((item) => item.id === id);
@@ -726,6 +774,7 @@ export default function Home() {
     });
   }, []);
 
+  // Wire the live data-channel listeners for chat, transfer, and close events
   const wireConnection = useCallback(
     (conn: DataConnection) => {
       activeConnRef.current = conn;
@@ -830,6 +879,7 @@ export default function Home() {
     [beginInboxTransfer, extractArrayBuffer, flushInboxTransfer, parseControlMessage, pushLog, updateInboxTransferProgress]
   );
 
+  // Destroy and recreate the PeerJS client with the current server settings
   const makePeer = useCallback(() => {
     if (peerRef.current) {
       try {
@@ -924,6 +974,7 @@ export default function Home() {
     });
   }, [clearMediaStreams, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, wireConnection]);
 
+  // Apply the cloud or local defaults when the mode changes
   const applyModeDefaults = useCallback(
     (nextMode: "cloud" | "local") => {
       if (nextMode === "local") {
@@ -941,6 +992,7 @@ export default function Home() {
     []
   );
 
+  // Open data connection to target peer ID
   const connectToTarget = useCallback(() => {
     if (!peerRef.current) {
       pushLog("Peer is not initialized yet.", true);
@@ -963,6 +1015,7 @@ export default function Home() {
     conn.on("open", () => wireConnection(conn));
   }, [pushLog, targetId, wireConnection]);
 
+  // Close current connection and reset UI state
   const disconnectFromTarget = useCallback(() => {
     if (!activeConnRef.current) {
       pushLog("No active connection to disconnect.", true);
@@ -980,6 +1033,7 @@ export default function Home() {
     pushLog("Disconnected from peer.");
   }, [pushLog]);
 
+  // Send chat line that currently typed into input box
   const sendCurrentMessage = useCallback(() => {
     if (!requireConnection()) {
       return;
@@ -1002,6 +1056,7 @@ export default function Home() {
     setMessage("");
   }, [message, pushLog, requireConnection, sendControlMessage, sender]);
 
+  // Stream files through worker so UI thread stays responsive
   const sendFilePayloads = useCallback(
     async (files: FileList | null, label: "Files" | "Folder") => {
       if (!requireConnection()) {
@@ -1064,6 +1119,7 @@ export default function Home() {
     ]
   );
 
+  // Start media call
   const startCall = useCallback(
     async (kind: "audio" | "video") => {
       if (!requireConnection()) {
@@ -1107,6 +1163,7 @@ export default function Home() {
     [clearMediaStreams, pushLog, requireConnection, setLocalStream, setRemoteStream]
   );
 
+  // End the active call and stop audio-video capture
   const endCall = useCallback(() => {
     if (!mediaConnRef.current && !localStreamRef.current) {
       pushLog("No active call to end.", true);
@@ -1123,6 +1180,7 @@ export default function Home() {
     pushLog("Call ended.");
   }, [clearMediaStreams, pushLog, stopAudioMeter, stopStream]);
 
+  // Toggle the microphone track without disconnecting call
   const toggleMic = useCallback(() => {
     const next = !micEnabled;
     setMicEnabled(next);
@@ -1132,6 +1190,7 @@ export default function Home() {
     pushLog(next ? "Microphone enabled." : "Microphone muted.");
   }, [micEnabled, pushLog]);
 
+  // Toggle the camera track without destroying the call (still working on it)
   const toggleCamera = useCallback(() => {
     const next = !cameraEnabled;
     setCameraEnabled(next);
@@ -1148,6 +1207,7 @@ export default function Home() {
     pushLog(next ? "Camera enabled." : "Camera disabled.");
   }, [cameraEnabled, pushLog]);
 
+  // Update file/folder status cards when a picker changes
   const onFilesSelected = useCallback(
     (files: FileList | null, label: "file" | "folder") => {
       const summary = summarizeSelection(files);
@@ -1167,6 +1227,7 @@ export default function Home() {
     [pushLog, summarizeSelection]
   );
 
+  // Copy peer ID
   const copyPeerId = useCallback(async () => {
     const id = myId.trim();
     if (!id || id === "Connecting...") {
@@ -1182,6 +1243,7 @@ export default function Home() {
     }
   }, [myId, pushLog]);
 
+  // Start/stop worker when the component unmounts
   useEffect(() => {
     const worker = new Worker("/workers/transfer-worker.js");
     transferWorkerRef.current = worker;
@@ -1205,6 +1267,7 @@ export default function Home() {
     };
   }, [drainWorkerQueue, pushLog]);
 
+  // Poll WebRTC stats so the diagnostics panel stays live
   useEffect(() => {
     let timer: number | null = null;
 
@@ -1299,6 +1362,7 @@ export default function Home() {
     };
   }, [connState, getRtcDataChannel, getRtcPeerConnection]);
 
+  // Build the PeerJS client when the page first loads (skeleton)
   useEffect(() => {
     const peerInitTimer = window.setTimeout(() => {
       makePeer();
@@ -1320,20 +1384,24 @@ export default function Home() {
     };
   }, [clearMediaStreams, makePeer, stopAudioMeter, stopStream]);
 
+  // Keep log scroller pinned to newest event
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
 
+  // Mirror inbox items into a ref so cleanup can revoke object URLs safely
   useEffect(() => {
     inboxItemsRef.current = inboxItems;
   }, [inboxItems]);
 
+  // Mirror sender progress items into a ref for symmetry and cleanup
   useEffect(() => {
     sendingItemsRef.current = sendingItems;
   }, [sendingItems]);
 
+  // Enable directory selection on supported browsers for folder uploads
   useEffect(() => {
     if (folderInputRef.current) {
       folderInputRef.current.setAttribute("webkitdirectory", "");
@@ -1341,6 +1409,7 @@ export default function Home() {
     }
   }, []);
 
+  // Render audio meter
   useEffect(() => {
     const stream = localStreamRef.current;
     if (!stream || callType !== "audio") {
@@ -1380,7 +1449,7 @@ export default function Home() {
 
       updateLevel();
     } catch {
-      // If audio context setup fails, keep visualizer at its last known state.
+      // If audio context setup fails, keep visualizer at its last known state
     }
 
     return () => {
@@ -1392,6 +1461,7 @@ export default function Home() {
     <div className="min-h-screen bg-[#030712] px-4 py-8 text-slate-100 sm:px-6">
       <SpeedInsights />
       <div className="mx-auto grid w-full max-w-7xl gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+        {/* Left-side workspace for connection setup, logs, and diagnostics */}
         <main className="rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
           <p className="mt-2 text-sm text-slate-300">
@@ -1399,6 +1469,7 @@ export default function Home() {
           </p>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            {/* Configure peer server and choose cloud or local mode */}
             <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
 
@@ -1464,6 +1535,7 @@ export default function Home() {
               </div>
             </section>
 
+            {/* Show current connection state, connect/disconnect, and live route stats */}
             <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
 
@@ -1575,6 +1647,7 @@ export default function Home() {
             </section>
           </div>
 
+          {/* Event log for sent messages, received messages, and transfer updates */}
           <section className="mt-4 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
             <div
@@ -1599,7 +1672,7 @@ export default function Home() {
                 else if(row.text.includes("Incoming") || row.text.includes("Received")){
                   textClass = "text-[#00ad4e]"
                 }
-                // All remaining chat/log rows keep the default text color. (it's white)
+                // All remaining chat/log rows keep the default text color (it's white)
 
                 return (
                   <div key={row.id} className={textClass}>
@@ -1611,9 +1684,11 @@ export default function Home() {
           </section>
         </main>
 
+        {/* Right-side workspace for calls, media previews, and file transfer tools */}
         <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Call</h1>
 
+          {/* Call controls plus local and remote video panes */}
           <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
 
@@ -1684,6 +1759,7 @@ export default function Home() {
             <p className="mt-3 text-xs text-slate-400">Secured Network</p>
           </section>
 
+          {/* File and folder upload controls plus sender/receiver progress panels */}
           <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">File Transfer</h2>
             <div className="mt-3 space-y-2">
@@ -1751,19 +1827,15 @@ export default function Home() {
                   Remove Folder Upload
                 </button>
               </div>
-
-              <p className="text-xs text-slate-400">
-                Pick files or a folder, then send them over the active data connection.
-              </p>
               <p className="text-xs text-slate-500">
-                Performance tip: keep this tab in the foreground and disable battery-saver modes for best sustained transfer speed.
+                DO NOT Close this tab, if you want to continue transfer.
               </p>
 
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Sending Transfers</h3>
 
                 {sendingItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No active transfers.</p>
+                  <p className="text-xs text-slate-400">No active transfers</p>
                 ) : (
                   <div className="space-y-2">
                     {sendingItems.map((item) => (
@@ -1803,7 +1875,7 @@ export default function Home() {
                 </div>
 
                 {inboxItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No received files/folders yet.</p>
+                  <p className="text-xs text-slate-400">No received files/folders yet</p>
                 ) : (
                   <div className="space-y-2">
                     {inboxItems.map((item) => (
