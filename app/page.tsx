@@ -91,6 +91,42 @@ type ConnectionDiagnostics = {
   route: "direct" | "relay" | "unknown";
 };
 
+type ControlMessage =
+  | {
+      kind: "chat-message";
+      text: string;
+    }
+  | {
+      kind: "transfer-start";
+      label: "Files" | "Folder";
+      count: number;
+    }
+  | {
+      kind: "file-start";
+      transferId: string;
+      source: "Files" | "Folder";
+      name: string;
+      mime: string;
+      size: number;
+      totalChunks: number;
+    }
+  | {
+      kind: "file-chunk-meta";
+      transferId: string;
+      index: number;
+      size: number;
+    }
+  | {
+      kind: "file-end";
+      transferId: string;
+    };
+
+type PendingChunkMeta = {
+  transferId: string;
+  index: number;
+  size: number;
+};
+
 const formatBytes = (bytes: number): string => {
   if (bytes <= 0) {
     return "0 B";
@@ -117,6 +153,21 @@ const formatLatency = (rttMs: number | null): string => {
     return "n/a";
   }
   return `${Math.round(rttMs)} ms`;
+};
+
+const diagnosticsColor = (diagnostics: ConnectionDiagnostics) => {
+  const highBuffer = diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK;
+  const highRtt = diagnostics.rttMs !== null && diagnostics.rttMs > 220;
+
+  if (diagnostics.route === "relay" || highBuffer || highRtt) {
+    return "text-rose-300";
+  }
+
+  if (diagnostics.route === "unknown" || diagnostics.dataChannelState !== "open") {
+    return "text-amber-300";
+  }
+
+  return "text-emerald-300";
 };
 
 type WorkerInboundMessage = {
@@ -206,6 +257,7 @@ export default function Home() {
   const transferPromisesRef = useRef<
     Map<string, { resolve: () => void; reject: (error: Error) => void }>
   >(new Map());
+  const pendingChunkMetaRef = useRef<PendingChunkMeta | null>(null);
 
   const modeHint = useMemo(
     () => "For localhost, use port 9000, path /myapp, secure false.",
@@ -344,6 +396,32 @@ export default function Home() {
     return mime.includes("zip") || mime.includes("audio/") || mime.includes("video/") || mime.startsWith("image/");
   }, []);
 
+  const sendControlMessage = useCallback((conn: DataConnection, payload: ControlMessage) => {
+    conn.send(JSON.stringify(payload));
+  }, []);
+
+  const parseControlMessage = useCallback((text: string): ControlMessage | null => {
+    try {
+      const parsed = JSON.parse(text) as { kind?: string };
+      if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") {
+        return null;
+      }
+
+      if (
+        parsed.kind === "chat-message" ||
+        parsed.kind === "transfer-start" ||
+        parsed.kind === "file-start" ||
+        parsed.kind === "file-chunk-meta" ||
+        parsed.kind === "file-end"
+      ) {
+        return parsed as ControlMessage;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const flushInboxTransfer = useCallback((transferId: string) => {
     const transfer = activeInboxTransfersRef.current.get(transferId);
     if (!transfer) {
@@ -476,7 +554,7 @@ export default function Home() {
       }
 
       if (payload.type === "prepared-start") {
-        conn.send({
+        sendControlMessage(conn, {
           kind: "file-start",
           transferId: payload.transferId,
           source: payload.source,
@@ -484,35 +562,37 @@ export default function Home() {
           mime: payload.mime,
           size: payload.size,
           totalChunks: payload.totalChunks,
-        } satisfies FileTransferStart);
+        });
         return;
       }
 
       if (payload.type === "prepared-chunk") {
         await waitForBufferedDrain(conn);
-        conn.send({
-          kind: "file-chunk",
+        sendControlMessage(conn, {
+          kind: "file-chunk-meta",
           transferId: payload.transferId,
           index: payload.index,
-          data: payload.data,
-        } satisfies FileTransferChunk);
+          size: payload.data.byteLength,
+        });
+        await waitForBufferedDrain(conn);
+        conn.send(payload.data);
         updateOutgoingTransferProgress(payload.transferId, payload.data.byteLength);
         return;
       }
 
       if (payload.type === "prepared-end") {
         await waitForBufferedDrain(conn);
-        conn.send({
+        sendControlMessage(conn, {
           kind: "file-end",
           transferId: payload.transferId,
-        } satisfies FileTransferEnd);
+        });
 
         flushOutgoingTransfer(payload.transferId);
         transferPromisesRef.current.get(payload.transferId)?.resolve();
         transferPromisesRef.current.delete(payload.transferId);
       }
     },
-    [flushOutgoingTransfer, pushLog, updateOutgoingTransferProgress, waitForBufferedDrain]
+    [flushOutgoingTransfer, pushLog, sendControlMessage, updateOutgoingTransferProgress, waitForBufferedDrain]
   );
 
   const drainWorkerQueue = useCallback(async () => {
@@ -660,78 +740,86 @@ export default function Home() {
 
       conn.on("data", (data) => {
         if (typeof data === "string") {
-          pushLog(`Received: ${data}`);
-          return;
-        }
-
-        if (typeof data === "object" && data !== null && "kind" in data) {
-          const payload = data as {
-            kind?: string;
-            label?: "Files" | "Folder";
-            count?: number;
-            name?: string;
-            mime?: string;
-            size?: number;
-            transferId?: string;
-            totalChunks?: number;
-            index?: number;
-            data?: unknown;
-          };
-
-          if (payload.kind === "transfer-start") {
-            const source = payload.label === "Folder" ? "Folder" : "Files";
-            incomingTransferLabelRef.current = source;
-            pushLog(`Incoming ${source.toLowerCase()} transfer: ${payload.count ?? 0} item(s).`);
+          const control = parseControlMessage(data);
+          if (!control) {
+            pushLog(`Received: ${data}`);
             return;
           }
 
-          if (payload.kind === "file-start" && payload.transferId && payload.name && payload.mime) {
+          if (control.kind === "chat-message") {
+            pushLog(`Received: ${control.text}`);
+            return;
+          }
+
+          if (control.kind === "transfer-start") {
+            const source = control.label === "Folder" ? "Folder" : "Files";
+            incomingTransferLabelRef.current = source;
+            pushLog(`Incoming ${source.toLowerCase()} transfer: ${control.count ?? 0} item(s).`);
+            return;
+          }
+
+          if (control.kind === "file-start") {
             beginInboxTransfer({
               kind: "file-start",
-              transferId: payload.transferId,
-              source: payload.label === "Folder" ? "Folder" : "Files",
-              name: payload.name,
-              mime: payload.mime,
-              size: payload.size ?? 0,
-              totalChunks: payload.totalChunks ?? 0,
+              transferId: control.transferId,
+              source: control.source,
+              name: control.name,
+              mime: control.mime,
+              size: control.size,
+              totalChunks: control.totalChunks,
             });
             return;
           }
 
-          if (payload.kind === "file-chunk" && payload.transferId) {
-            const transfer = activeInboxTransfersRef.current.get(payload.transferId);
-            const buffer = extractArrayBuffer(payload.data);
-            if (!transfer || !buffer) {
-              pushLog(`Received file chunk that could not be attached to a transfer.`, true);
-              return;
-            }
-
-            transfer.chunks.push(buffer);
-            transfer.receivedBytes += buffer.byteLength;
-            transfer.lastTick = Date.now();
-
-            updateInboxTransferProgress(payload.transferId);
+          if (control.kind === "file-chunk-meta") {
+            pendingChunkMetaRef.current = {
+              transferId: control.transferId,
+              index: control.index,
+              size: control.size,
+            };
             return;
           }
 
-          if (payload.kind === "file-end" && payload.transferId) {
-            const transfer = activeInboxTransfersRef.current.get(payload.transferId);
+          if (control.kind === "file-end") {
+            const transfer = activeInboxTransfersRef.current.get(control.transferId);
             if (!transfer) {
               pushLog(`Received file end without a matching transfer.`, true);
               return;
             }
 
-            flushInboxTransfer(payload.transferId);
+            flushInboxTransfer(control.transferId);
             return;
           }
+
+          return;
         }
 
-        pushLog(`Received: ${JSON.stringify(data)}`);
+        const meta = pendingChunkMetaRef.current;
+        const buffer = extractArrayBuffer(data);
+
+        if (!meta || !buffer) {
+          pushLog("Received binary payload without chunk metadata.", true);
+          return;
+        }
+
+        const transfer = activeInboxTransfersRef.current.get(meta.transferId);
+        if (!transfer) {
+          pushLog("Received file chunk for unknown transfer.", true);
+          pendingChunkMetaRef.current = null;
+          return;
+        }
+
+        transfer.chunks.push(buffer);
+        transfer.receivedBytes += buffer.byteLength;
+        transfer.lastTick = Date.now();
+        pendingChunkMetaRef.current = null;
+        updateInboxTransferProgress(meta.transferId);
       });
 
       conn.on("close", () => {
         pushLog("Connection closed");
         activeConnRef.current = null;
+        pendingChunkMetaRef.current = null;
         setConnState("Not connected");
       });
 
@@ -739,7 +827,7 @@ export default function Home() {
         pushLog(`Connection error: ${err.message || err}`, true);
       });
     },
-    [beginInboxTransfer, extractArrayBuffer, flushInboxTransfer, pushLog, updateInboxTransferProgress]
+    [beginInboxTransfer, extractArrayBuffer, flushInboxTransfer, parseControlMessage, pushLog, updateInboxTransferProgress]
   );
 
   const makePeer = useCallback(() => {
@@ -904,10 +992,15 @@ export default function Home() {
     }
 
     const payload = sender.trim() ? `${sender.trim()}: ${text}` : text;
-    activeConnRef.current?.send(payload);
+    if (activeConnRef.current) {
+      sendControlMessage(activeConnRef.current, {
+        kind: "chat-message",
+        text: payload,
+      });
+    }
     pushLog(`Sent: ${payload}`);
     setMessage("");
-  }, [message, pushLog, requireConnection, sender]);
+  }, [message, pushLog, requireConnection, sendControlMessage, sender]);
 
   const sendFilePayloads = useCallback(
     async (files: FileList | null, label: "Files" | "Folder") => {
@@ -925,11 +1018,13 @@ export default function Home() {
         return;
       }
 
-      activeConnRef.current?.send({
-        kind: "transfer-start",
-        label,
-        count: files.length,
-      });
+      if (activeConnRef.current) {
+        sendControlMessage(activeConnRef.current, {
+          kind: "transfer-start",
+          label,
+          count: files.length,
+        });
+      }
 
       for (const file of Array.from(files)) {
         const transferId = `${Date.now()}-${Math.random()}`;
@@ -965,6 +1060,7 @@ export default function Home() {
       isLikelyCompressed,
       pushLog,
       requireConnection,
+      sendControlMessage,
     ]
   );
 
@@ -1089,6 +1185,8 @@ export default function Home() {
   useEffect(() => {
     const worker = new Worker("/workers/transfer-worker.js");
     transferWorkerRef.current = worker;
+    const transferPromises = transferPromisesRef.current;
+    const workerQueue = workerQueueRef.current;
 
     worker.onmessage = (event: MessageEvent<WorkerOutboundMessage>) => {
       workerQueueRef.current.push(event.data);
@@ -1102,8 +1200,8 @@ export default function Home() {
     return () => {
       transferWorkerRef.current?.terminate();
       transferWorkerRef.current = null;
-      workerQueueRef.current = [];
-      transferPromisesRef.current.clear();
+      workerQueue.length = 0;
+      transferPromises.clear();
     };
   }, [drainWorkerQueue, pushLog]);
 
@@ -1453,10 +1551,24 @@ export default function Home() {
 
               <div className="rounded-lg border border-slate-700 bg-[#030712] px-3 py-2 text-xs text-slate-300">
                 <p className="font-semibold uppercase tracking-wide text-slate-300">Connection Diagnostics</p>
-                <p>Data channel: {diagnostics.dataChannelState}</p>
-                <p>Buffered outbound: {formatBytes(diagnostics.bufferedAmount)}</p>
-                <p>Estimated RTT: {formatLatency(diagnostics.rttMs)}</p>
-                <p>
+                <p className={diagnostics.dataChannelState === "open" ? "text-emerald-300" : "text-amber-300"}>
+                  Data channel: {diagnostics.dataChannelState}
+                </p>
+                <p className={diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-300" : "text-emerald-300"}>
+                  Buffered outbound: {formatBytes(diagnostics.bufferedAmount)}
+                </p>
+                <p
+                  className={
+                    diagnostics.rttMs === null
+                      ? "text-amber-300"
+                      : diagnostics.rttMs > 220
+                        ? "text-rose-300"
+                        : "text-emerald-300"
+                  }
+                >
+                  Estimated RTT: {formatLatency(diagnostics.rttMs)}
+                </p>
+                <p className={diagnosticsColor(diagnostics)}>
                   Route: {diagnostics.route === "unknown" ? "Unknown" : diagnostics.route === "relay" ? "Relay" : "Direct"}
                 </p>
               </div>
