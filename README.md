@@ -17,15 +17,13 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 **This project was inspired from [filepizza](https://github.com/kern/filepizza)**
 
-
-/** Personal notes
- * 
- * Todos:
- * - Improve UI
- *    - Improve color theme (visual)
- *    - Improve visual background (visual)
- * - Add top bar (functional)
- *    - Add: Home | X | X |
+## Notes
+Todos:
+ *   Improve UI
+      - Improve color theme (visual)
+      - Improve visual background (visual)
+ *   Add top bar (functional)
+      - Add: Home | X | X |
  * 
  * 
  * 
