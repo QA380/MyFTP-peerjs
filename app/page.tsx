@@ -1157,7 +1157,7 @@ export default function Home() {
   // Open data connection to target peer ID
   const connectToTarget = useCallback(() => {
     if (!peerRef.current) {
-      pushLog("Peer is not initialized yet.", true);
+      pushLog("Peer is not initialized .", true);
       return;
     }
 
@@ -1231,7 +1231,7 @@ export default function Home() {
 
       const worker = transferWorkerRef.current;
       if (!worker) {
-        pushLog("Transfer worker is not ready yet. Please retry in a second.", true);
+        pushLog("Transfer worker is not ready . Please retry in a second.", true);
         return;
       }
 
@@ -1398,7 +1398,7 @@ export default function Home() {
   const copyPeerId = useCallback(async () => {
     const id = myId.trim();
     if (!id || id === "Connecting...") {
-      pushLog("Peer ID is not ready yet.", true);
+      pushLog("Peer ID is not ready .", true);
       return;
     }
 
@@ -2083,7 +2083,7 @@ export default function Home() {
               <div className="grid gap-3">
                 <TreePanel
                   title="Uploaded File List"
-                  emptyLabel="No uploaded files or folders yet"
+                  emptyLabel="No uploaded files or folders "
                   entries={[...uploadedFiles, ...uploadedFolderFiles]}
                   onDelete={(path) => {
                     setUploadedFiles((prev) => prev.filter((f) => !(f.path === path || f.path.startsWith(`${path}/`))));
@@ -2092,7 +2092,7 @@ export default function Home() {
                 />
                 <TreePanel
                   title="Received File List"
-                  emptyLabel="No completed received files or folders yet"
+                  emptyLabel="No completed received files or folders "
                   entries={inboxItems
                     .filter((item) => item.complete)
                     .map((item) => ({ path: item.name, size: item.size }))}
@@ -2155,7 +2155,7 @@ export default function Home() {
                 </div>
 
                 {inboxItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No received files/folders yet</p>
+                  <p className="text-xs text-slate-400">No active transfers</p>
                 ) : (
                   <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
                     {inboxItems.map((item) => (
