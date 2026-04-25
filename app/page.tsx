@@ -4,6 +4,9 @@ import { SpeedInsights } from "@vercel/speed-insights/next";
 import Peer, { DataConnection, MediaConnection } from "peerjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
+import { Progress } from "@/components/animate-ui/components/radix/progress";
+import { Files, FileItem } from "@/components/animate-ui/components/radix/files";
+import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X } from "lucide-react";
 
 type LogRow = {
   id: number;
@@ -40,20 +43,6 @@ type FileTransferStart = {
   mime: string;
   size: number;
   totalChunks: number;
-};
-
-// Raw binary chunk sent after a chunk meta frame
-type FileTransferChunk = {
-  kind: "file-chunk";
-  transferId: string;
-  index: number;
-  data: ArrayBuffer;
-};
-
-// Control frame that closes an incoming file transfer
-type FileTransferEnd = {
-  kind: "file-end";
-  transferId: string;
 };
 
 // Track a received transfer while chunks are still arriving
@@ -225,6 +214,7 @@ type WorkerOutboundMessage =
     };
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<"home" | "transfer" | "call">("home");
   // Connection mode and server settings
   const [mode, setMode] = useState<"cloud" | "local">("cloud");
   const [host, setHost] = useState("0.peerjs.com");
@@ -259,6 +249,8 @@ export default function Home() {
   const activeConnRef = useRef<DataConnection | null>(null);
   const mediaConnRef = useRef<MediaConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const micEnabledRef = useRef(true);
+  const cameraEnabledRef = useRef(true);
 
   // Telemetries
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -308,10 +300,10 @@ export default function Home() {
     (stream: MediaStream) => {
       stopStream(localStreamRef.current);
       stream.getAudioTracks().forEach((track) => {
-        track.enabled = micEnabled;
+        track.enabled = micEnabledRef.current;
       });
       stream.getVideoTracks().forEach((track) => {
-        track.enabled = cameraEnabled;
+        track.enabled = cameraEnabledRef.current;
       });
       localStreamRef.current = stream;
       setStreamVersion((prev) => prev + 1);
@@ -319,7 +311,7 @@ export default function Home() {
         localVideoRef.current.srcObject = stream;
       }
     },
-    [cameraEnabled, micEnabled, stopStream]
+    [stopStream]
   );
 
   const setRemoteStream = useCallback((stream: MediaStream) => {
@@ -1184,6 +1176,7 @@ export default function Home() {
   // Toggle the microphone track without disconnecting call
   const toggleMic = useCallback(() => {
     const next = !micEnabled;
+    micEnabledRef.current = next;
     setMicEnabled(next);
     localStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = next;
@@ -1194,6 +1187,7 @@ export default function Home() {
   // Toggle the camera track without destroying the call (still working on it)
   const toggleCamera = useCallback(() => {
     const next = !cameraEnabled;
+    cameraEnabledRef.current = next;
     setCameraEnabled(next);
 
     const videoTracks = localStreamRef.current?.getVideoTracks() ?? [];
@@ -1410,6 +1404,14 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    micEnabledRef.current = micEnabled;
+  }, [micEnabled]);
+
+  useEffect(() => {
+    cameraEnabledRef.current = cameraEnabled;
+  }, [cameraEnabled]);
+
   // Render audio meter
   useEffect(() => {
     const stream = localStreamRef.current;
@@ -1459,11 +1461,52 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <div className="min-h-screen bg-[#030712] px-4 py-8 text-slate-100 sm:px-6">
+    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] px-4 py-8 text-slate-100 sm:px-6">
       <SpeedInsights />
       <div className="mx-auto grid w-full max-w-7xl gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <header className="rounded-2xl border border-slate-800/80 bg-[#020617]/80 p-3 backdrop-blur lg:col-span-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === "home"
+                  ? "bg-cyan-500 text-slate-950"
+                  : "border border-slate-700 bg-[#0b1220] text-slate-200 hover:bg-[#131d33]"
+              }`}
+              onClick={() => setActiveTab("home")}
+              type="button"
+            >
+              <House className="size-4" />
+              Home
+            </button>
+            <button
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === "transfer"
+                  ? "bg-cyan-500 text-slate-950"
+                  : "border border-slate-700 bg-[#0b1220] text-slate-200 hover:bg-[#131d33]"
+              }`}
+              onClick={() => setActiveTab("transfer")}
+              type="button"
+            >
+              <Folder className="size-4" />
+              File Transfer
+            </button>
+            <button
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                activeTab === "call"
+                  ? "bg-cyan-500 text-slate-950"
+                  : "border border-slate-700 bg-[#0b1220] text-slate-200 hover:bg-[#131d33]"
+              }`}
+              onClick={() => setActiveTab("call")}
+              type="button"
+            >
+              <Phone className="size-4" />
+              Call
+            </button>
+          </div>
+        </header>
+
         {/* Left-side workspace for connection setup, logs, and diagnostics */}
-        <main className="rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
+        <main className="rounded-2xl border border-slate-800 bg-[#070f1f]/80 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
           <p className="mt-2 text-sm text-slate-300">
             Connect | transfer files/folders | calls
@@ -1471,7 +1514,7 @@ export default function Home() {
 
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
             {/* Configure peer server and choose cloud or local mode */}
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
@@ -1537,7 +1580,7 @@ export default function Home() {
             </section>
 
             {/* Show current connection state, connect/disconnect, and live route stats */}
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#101a2e]/70 p-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
@@ -1575,12 +1618,12 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+              <div className="grid grid-cols-1 gap-2">
                 <input
                   className={inputClass}
-                  placeholder="Type message"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="Name (optional)"
+                  value={sender}
+                  onChange={(e) => setSender(e.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -1588,11 +1631,14 @@ export default function Home() {
                     }
                   }}
                 />
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                 <input
                   className={inputClass}
-                  placeholder="Name (optional)"
-                  value={sender}
-                  onChange={(e) => setSender(e.target.value)}
+                  placeholder="Type message"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -1659,7 +1705,7 @@ export default function Home() {
           </div>
 
           {/* Event log for sent messages, received messages, and transfer updates */}
-          <section className="mt-4 rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+          <section className="mt-4 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
             <div
               ref={logContainerRef}
@@ -1696,11 +1742,11 @@ export default function Home() {
         </main>
 
         {/* Right-side workspace for calls, media previews, and file transfer tools */}
-        <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#030712]/85 p-5 backdrop-blur">
+        <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#081225]/80 p-5 backdrop-blur">
           <h1 className="text-2xl font-bold tracking-tight">Extra Functions</h1>
 
           {/* Call controls plus local and remote video panes */}
-          <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+          <section className={`rounded-xl border border-slate-800 bg-[#0e182b]/75 p-3 ${activeTab !== "call" ? "hidden" : ""}`}>
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1721,18 +1767,28 @@ export default function Home() {
                 End Call
               </button>
               <button
-                className="rounded-xl border border-slate-700 bg-[#030712] px-3 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                  micEnabled
+                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                }`}
                 onClick={toggleMic}
                 type="button"
+                title={micEnabled ? "Mute microphone" : "Unmute microphone"}
               >
-                {micEnabled ? "Mute Mic" : "Unmute Mic"}
+                {micEnabled ? <Mic className="size-4" /> : <MicOff className="size-4" />}
               </button>
               <button
-                className="rounded-xl border border-slate-700 bg-[#030712] px-3 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                  cameraEnabled
+                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                }`}
                 onClick={toggleCamera}
                 type="button"
+                title={cameraEnabled ? "Disable camera" : "Enable camera"}
               >
-                {cameraEnabled ? "Disable Camera" : "Enable Camera"}
+                {cameraEnabled ? <Video className="size-4" /> : <VideoOff className="size-4" />}
               </button>
             </div>
 
@@ -1771,23 +1827,42 @@ export default function Home() {
           </section>
 
           {/* File and folder upload controls plus sender/receiver progress panels */}
-          <section className="rounded-xl border border-slate-800 bg-[#030712]/50 p-3">
+          <section className={`rounded-xl border border-slate-800 bg-[#121d31]/75 p-3 ${activeTab !== "transfer" ? "hidden" : ""}`}>
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">File Transfer</h2>
             <div className="mt-3 space-y-2">
               <input
                 ref={fileInputRef}
-                className={inputClass}
+                className="hidden"
                 type="file"
                 multiple
                 onChange={(event) => onFilesSelected(event.target.files, "file")}
               />
               <input
                 ref={folderInputRef}
-                className={inputClass}
+                className="hidden"
                 type="file"
                 multiple
                 onChange={(event) => onFilesSelected(event.target.files, "folder")}
               />
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+                  onClick={() => fileInputRef.current?.click()}
+                  type="button"
+                >
+                  <Plus className="size-4" />
+                  Add File
+                </button>
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+                  onClick={() => folderInputRef.current?.click()}
+                  type="button"
+                >
+                  <Plus className="size-4" />
+                  Add Folder
+                </button>
+              </div>
 
               <div className="rounded-lg border border-slate-700 bg-[#030712] px-3 py-2 text-xs text-slate-300">
                 <p>
@@ -1848,28 +1923,37 @@ export default function Home() {
                 {sendingItems.length === 0 ? (
                   <p className="text-xs text-slate-400">No active transfers</p>
                 ) : (
-                  <div className="space-y-2">
+                  <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
                     {sendingItems.map((item) => (
-                      <div key={item.id} className="rounded-lg border border-slate-700 bg-[#030712]/70 p-2 text-xs">
-                        <p className="font-medium text-slate-200">{item.name}</p>
-                        <p className="text-slate-400">
-                          {item.source} | {formatBytes(item.size)}
-                        </p>
-                        <p className="text-slate-400">
-                          Transfer rate: {formatBytes(Math.max(item.rate, 0))}/s
-                        </p>
-                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
-                          <div
-                            className="h-full rounded-full bg-green-500 transition-all duration-150"
-                            style={{ width: `${Math.min(Math.max(item.progress * 100, 0), 100)}%` }}
-                          />
+                      <div key={item.id} className="rounded-md p-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <FileItem>{item.name}</FileItem>
+                          <div className="flex items-center gap-2 text-slate-300">
+                            <span>{formatBytes(item.size)}</span>
+                            <button
+                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+                              onClick={() => setSendingItems((prev) => prev.filter((entry) => entry.id !== item.id))}
+                              type="button"
+                              title="Remove row"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </div>
                         </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-2" />
+                          <SlidingNumber number={Math.round(item.progress * 100)} className="w-8 text-right text-[11px] text-slate-300" />
+                          <span className="text-[11px] text-slate-400">%</span>
+                        </div>
+                        <p className="mt-1 text-slate-400">
+                          {formatBytes(Math.max(item.rate, 0))}/s
+                        </p>
                         <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
                           {item.complete ? "Transfer complete." : `Sending... ${Math.round(item.progress * 100)}%`}
                         </p>
                       </div>
                     ))}
-                  </div>
+                  </Files>
                 )}
               </div>
 
@@ -1888,22 +1972,29 @@ export default function Home() {
                 {inboxItems.length === 0 ? (
                   <p className="text-xs text-slate-400">No received files/folders yet</p>
                 ) : (
-                  <div className="space-y-2">
+                  <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
                     {inboxItems.map((item) => (
-                      <div key={item.id} className="rounded-lg border border-slate-700 bg-[#030712]/70 p-2 text-xs">
-                        <p className="font-medium text-slate-200">{item.name}</p>
-                        <p className="text-slate-400">
-                          {item.source} | {formatBytes(item.size)}
-                        </p>
-                        <p className="text-slate-400">
-                          Transfer rate: {formatBytes(Math.max(item.rate, 0))}/s
-                        </p>
-                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
-                          <div
-                            className="h-full rounded-full bg-cyan-400 transition-all duration-150"
-                            style={{ width: `${Math.min(Math.max(item.progress * 100, 0), 100)}%` }}
-                          />
+                      <div key={item.id} className="rounded-md p-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <FileItem>{item.name}</FileItem>
+                          <div className="flex items-center gap-2 text-slate-300">
+                            <span>{formatBytes(item.size)}</span>
+                            <button
+                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+                              onClick={() => removeInboxItem(item.id)}
+                              type="button"
+                              title="Remove row"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </div>
                         </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-2" />
+                          <SlidingNumber number={Math.round(item.progress * 100)} className="w-8 text-right text-[11px] text-slate-300" />
+                          <span className="text-[11px] text-slate-400">%</span>
+                        </div>
+                        <p className="mt-1 text-slate-400">{formatBytes(Math.max(item.rate, 0))}/s</p>
                         <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
                           {item.complete ? "Transfer complete and ready." : `Receiving... ${Math.round(item.progress * 100)}%`}
                         </p>
@@ -1916,21 +2007,21 @@ export default function Home() {
                           >
                             Download
                           </a>
-                          <button
-                            className="rounded-lg border border-slate-600 px-2 py-1 font-semibold text-slate-200 transition hover:bg-[#111827]"
-                            onClick={() => removeInboxItem(item.id)}
-                            type="button"
-                          >
-                            Remove
-                          </button>
                         </div>
                       </div>
                     ))}
-                  </div>
+                  </Files>
                 )}
               </div>
             </div>
           </section>
+
+          {activeTab === "home" && (
+            <section className="rounded-xl border border-slate-800 bg-[#0f172a]/70 p-3 text-sm text-slate-300">
+              <p className="font-semibold text-slate-100">Home</p>
+              <p className="mt-2">Use the top tabs to switch between file transfer and call panels.</p>
+            </section>
+          )}
         </main>
       </div>
     </div>
