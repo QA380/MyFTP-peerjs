@@ -2,6 +2,7 @@
 
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import Peer, { DataConnection, MediaConnection } from "peerjs";
+import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
@@ -237,6 +238,25 @@ const triggerBrowserDownload = (url: string, fileName: string) => {
   link.remove();
 };
 
+const downloadBlobFile = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob);
+  triggerBrowserDownload(url, fileName);
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
+const buildFolderZipBlob = async (folderPath: string, items: InboxItem[]): Promise<Blob> => {
+  const zip = new JSZip();
+
+  for (const item of items) {
+    const relativePath = item.name.slice(folderPath.length + 1);
+    const response = await fetch(item.url);
+    const blob = await response.blob();
+    zip.file(relativePath, blob);
+  }
+
+  return zip.generateAsync({ type: "blob" });
+};
+
 const writeBlobToDirectory = async (
   directory: FileSystemDirectoryHandle,
   relativePath: string,
@@ -328,7 +348,7 @@ function TreeNodeRow({
     return (
       <FolderItem value={node.path}>
         <div className="flex w-full items-start justify-between gap-2 rounded-lg border border-slate-800/70 bg-[#030712]/80 px-3 py-2">
-          <FolderTrigger className="min-w-0 flex-1 whitespace-normal break-words">
+          <FolderTrigger className="min-w-0 flex-1 whitespace-normal break-words !text-slate-300 hover:!text-slate-300 focus:!text-slate-300">
             {node.name}
           </FolderTrigger>
           <div className="flex shrink-0 items-center gap-1">
@@ -442,7 +462,7 @@ export default function Home() {
   const [path, setPath] = useState("/");
   const [secure, setSecure] = useState("true");
   const [myId, setMyId] = useState("Connecting...");
-    const [myName, setMyName] = useState("");
+  const [myName, setMyName] = useState("");
   const [targetId, setTargetId] = useState("");
   const [message, setMessage] = useState("");
   const [sender, setSender] = useState("");
@@ -460,6 +480,7 @@ export default function Home() {
   const [uploadedFolderFiles, setUploadedFolderFiles] = useState<TreeEntry[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
+  const [workspaceSplit, setWorkspaceSplit] = useState(64);
   // Live connection diagnostics for route and buffer health
   const [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics>({
     dataChannelState: "closed",
@@ -493,6 +514,8 @@ export default function Home() {
   const transferWorkerRef = useRef<Worker | null>(null);
   const workerQueueRef = useRef<WorkerOutboundMessage[]>([]);
   const workerQueueRunningRef = useRef(false);
+  const workspaceShellRef = useRef<HTMLDivElement | null>(null);
+  const isResizingWorkspaceRef = useRef(false);
   const transferPromisesRef = useRef<
     Map<string, { resolve: () => void; reject: (error: Error) => void }>
   >(new Map());
@@ -993,7 +1016,9 @@ export default function Home() {
       }).showDirectoryPicker;
 
       if (!picker) {
-        pushLog("This browser does not support folder downloads.", true);
+        const zipBlob = await buildFolderZipBlob(folderPath, folderItems);
+        downloadBlobFile(zipBlob, `${normalizePathParts(folderPath).pop() ?? folderPath}.zip`);
+        pushLog(`Downloaded ${folderPath} as a zip archive with ${folderItems.length} file(s).`);
         return;
       }
 
@@ -1036,12 +1061,9 @@ export default function Home() {
         showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
       }).showDirectoryPicker;
 
-      if (!picker) {
-        pushLog("This browser does not support folder downloads.", true);
-        return;
+      if (picker) {
+        folderTargetDirectory = await picker();
       }
-
-      folderTargetDirectory = await picker();
     }
 
     for (const folderRoot of folderRoots) {
@@ -1731,6 +1753,30 @@ export default function Home() {
     cameraEnabledRef.current = cameraEnabled;
   }, [cameraEnabled]);
 
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!isResizingWorkspaceRef.current || !workspaceShellRef.current) {
+        return;
+      }
+
+      const bounds = workspaceShellRef.current.getBoundingClientRect();
+      const nextSplit = ((event.clientX - bounds.left) / bounds.width) * 100;
+      setWorkspaceSplit(Math.min(75, Math.max(40, nextSplit)));
+    };
+
+    const stopResize = () => {
+      isResizingWorkspaceRef.current = false;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopResize);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopResize);
+    };
+  }, []);
+
   // Render audio meter
   useEffect(() => {
     const stream = localStreamRef.current;
@@ -1840,10 +1886,13 @@ export default function Home() {
       </header>
 
       <div className="mx-auto w-full max-w-[96rem] px-2 pb-5 pt-24 sm:px-3 lg:px-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div ref={workspaceShellRef} className="flex flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-0">
 
         {/* Left-side workspace for connection setup, logs, and diagnostics */}
-        <main className="rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3">
+        <main
+          className="rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3 lg:rounded-r-none"
+          style={{ width: "100%", flexBasis: `${workspaceSplit}%` }}
+        >
           <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
           <p className="mt-2 text-sm text-slate-300">
             Connect | transfer files/folders | calls
@@ -1898,13 +1947,6 @@ export default function Home() {
                   Reconnect Peer
                 </button>
               </div>
-
-              <input
-                className={inputClass}
-                placeholder="Your Name"
-                value={myName}
-                onChange={(e) => setMyName(e.target.value)}
-              />
 
               <p className="text-xs text-slate-400">{modeHint}</p>
               <p className="text-xs text-slate-500">
@@ -1961,6 +2003,13 @@ export default function Home() {
                   {connState === "Not connected" ? "Connect" : "Disconnect"}
                 </button>
               </div>
+
+              <input
+                className={inputClass}
+                placeholder="Name (optional)"
+                value={myName}
+                onChange={(e) => setMyName(e.target.value)}
+              />
 
               <button
                 className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
@@ -2083,8 +2132,22 @@ export default function Home() {
           </section>
         </main>
 
+        <div
+          aria-label="Resize workspaces"
+          className="hidden w-2 cursor-col-resize items-stretch justify-center lg:flex"
+          onMouseDown={() => {
+            isResizingWorkspaceRef.current = true;
+          }}
+          role="separator"
+        >
+          <div className="w-px rounded-full bg-slate-700 transition hover:bg-cyan-400" />
+        </div>
+
         {/* Right-side workspace for calls, media previews, and file transfer tools */}
-        <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3">
+        <main
+          className="space-y-4 rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3 lg:rounded-l-none"
+          style={{ width: "100%", flexBasis: `${100 - workspaceSplit}%` }}
+        >
           <h1 className="text-2xl font-bold tracking-tight">Extra Functions</h1>
 
           {/* Call controls plus local and remote video panes */}
