@@ -4,7 +4,7 @@ import { SpeedInsights } from "@vercel/speed-insights/next";
 import Peer, { DataConnection, MediaConnection } from "peerjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
-import { Files, FileItem } from "@/components/animate-ui/components/radix/files";
+import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
 import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Bell } from "lucide-react";
 
 type LogRow = {
@@ -212,6 +212,131 @@ type WorkerOutboundMessage =
       message: string;
     };
 
+type TreeEntry = {
+  path: string;
+  size: number;
+};
+
+type TreeNode = {
+  path: string;
+  name: string;
+  size: number;
+  isFolder: boolean;
+  children: TreeNode[];
+};
+
+const normalizePathParts = (path: string) => path.replaceAll("\\", "/").split("/").filter(Boolean);
+
+const sortTreeNodes = (nodes: TreeNode[]): TreeNode[] =>
+  nodes
+    .sort((left, right) => {
+      if (left.isFolder !== right.isFolder) {
+        return left.isFolder ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name);
+    })
+    .map((node) => ({
+      ...node,
+      children: sortTreeNodes(node.children),
+    }));
+
+const buildTreeFromEntries = (entries: TreeEntry[]): TreeNode[] => {
+  const roots: TreeNode[] = [];
+
+  for (const entry of entries) {
+    const parts = normalizePathParts(entry.path);
+    if (parts.length === 0) {
+      continue;
+    }
+
+    let children = roots;
+    let currentPath = "";
+
+    parts.forEach((part, index) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const isLeaf = index === parts.length - 1;
+      let node = children.find((child) => child.name === part);
+
+      if (!node) {
+        node = {
+          path: currentPath,
+          name: part,
+          size: isLeaf ? entry.size : 0,
+          isFolder: !isLeaf,
+          children: [],
+        };
+        children.push(node);
+      }
+
+      if (isLeaf) {
+        node.size = entry.size;
+        node.isFolder = false;
+      } else {
+        node.isFolder = true;
+        children = node.children;
+      }
+    });
+  }
+
+  return sortTreeNodes(roots);
+};
+
+function TreeNodeRow({ node }: { node: TreeNode }) {
+  if (node.isFolder) {
+    return (
+      <FolderItem value={node.path}>
+        <FolderTrigger>{node.name}</FolderTrigger>
+        <FolderContent>
+          <SubFiles className="ml-3 border-l border-slate-800 pl-3" defaultOpen={node.children.filter((child) => child.isFolder).map((child) => child.path)}>
+            {node.children.map((child) => (
+              <TreeNodeRow key={child.path} node={child} />
+            ))}
+          </SubFiles>
+        </FolderContent>
+      </FolderItem>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800/70 bg-[#030712]/80 px-3 py-2">
+      <FileItem className="truncate">{node.name}</FileItem>
+      <span className="shrink-0 text-[11px] text-slate-400">{formatBytes(node.size)}</span>
+    </div>
+  );
+}
+
+function TreePanel({
+  title,
+  emptyLabel,
+  entries,
+}: {
+  title: string;
+  emptyLabel: string;
+  entries: TreeEntry[];
+}) {
+  const tree = useMemo(() => buildTreeFromEntries(entries), [entries]);
+
+  return (
+    <section className="rounded-xl border border-slate-800 bg-[#030712] p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">{title}</h3>
+        <span className="text-[11px] text-slate-500">{entries.length} item(s)</span>
+      </div>
+
+      {tree.length === 0 ? (
+        <p className="text-xs text-slate-400">{emptyLabel}</p>
+      ) : (
+        <Files className="rounded-lg border border-slate-800 bg-[#0a1324] p-2" defaultOpen={tree.filter((node) => node.isFolder).map((node) => node.path)}>
+          {tree.map((node) => (
+            <TreeNodeRow key={node.path} node={node} />
+          ))}
+        </Files>
+      )}
+    </section>
+  );
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"home" | "transfer" | "call">("home");
   const [notifications, setNotifications] = useState({
@@ -239,6 +364,8 @@ export default function Home() {
   const [streamVersion, setStreamVersion] = useState(0);
   const [fileSelection, setFileSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
   const [folderSelection, setFolderSelection] = useState<SelectionInfo>({ count: 0, totalBytes: 0, ready: false });
+  const [uploadedFiles, setUploadedFiles] = useState<TreeEntry[]>([]);
+  const [uploadedFolderFiles, setUploadedFolderFiles] = useState<TreeEntry[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
   // Live connection diagnostics for route and buffer health
@@ -688,12 +815,12 @@ export default function Home() {
   }, []);
 
   // Summarize file selections for the upload status cards
-  const summarizeSelection = useCallback((files: FileList | null): SelectionInfo => {
-    if (!files || files.length === 0) {
+  const summarizeSelection = useCallback((files: File[]): SelectionInfo => {
+    if (files.length === 0) {
       return { count: 0, totalBytes: 0, ready: false };
     }
 
-    const totalBytes = Array.from(files).reduce((sum, file) => sum + file.size, 0);
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
     return {
       count: files.length,
       totalBytes,
@@ -736,6 +863,7 @@ export default function Home() {
         fileInputRef.current.value = "";
       }
       setFileSelection({ count: 0, totalBytes: 0, ready: false });
+      setUploadedFiles([]);
       pushLog("Removed uploaded file selection.");
       return;
     }
@@ -744,6 +872,7 @@ export default function Home() {
       folderInputRef.current.value = "";
     }
     setFolderSelection({ count: 0, totalBytes: 0, ready: false });
+    setUploadedFolderFiles([]);
     pushLog("Removed uploaded folder selection.");
   }, [pushLog]);
 
@@ -1213,12 +1342,15 @@ export default function Home() {
   // Update file/folder status cards when a picker changes
   const onFilesSelected = useCallback(
     (files: FileList | null, label: "file" | "folder") => {
-      const summary = summarizeSelection(files);
+      const entries = files ? Array.from(files) : [];
+      const summary = summarizeSelection(entries);
 
       if (label === "file") {
         setFileSelection(summary);
+        setUploadedFiles(entries.map((file) => ({ path: file.name, size: file.size })));
       } else {
         setFolderSelection(summary);
+        setUploadedFolderFiles(entries.map((file) => ({ path: file.webkitRelativePath || file.name, size: file.size })));
       }
 
       if (summary.ready) {
@@ -1469,11 +1601,10 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] px-4 py-8 text-slate-100 sm:px-6">
+    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
       <SpeedInsights />
-      <div className="mx-auto w-full max-w-7xl">
-        <header className="border-b border-slate-800 bg-[#020617] px-4 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      <header className="fixed inset-x-0 top-0 z-20 border-b border-slate-800 bg-[#020617] px-0">
+          <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
@@ -1527,9 +1658,10 @@ export default function Home() {
               <Bell className="relative z-10 size-4" />
             </button>
           </div>
-        </header>
+      </header>
 
-        <div className="grid gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="mx-auto w-full max-w-7xl px-4 pb-5 pt-24 sm:px-6 lg:px-8">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
 
         {/* Left-side workspace for connection setup, logs, and diagnostics */}
         <main className="rounded-2xl border border-slate-800 bg-[#070f1f]/80 p-5 backdrop-blur">
@@ -1941,6 +2073,21 @@ export default function Home() {
                 DO NOT Close this tab, if you want to continue transfer.
               </p>
 
+              <div className="grid gap-3 xl:grid-cols-2">
+                <TreePanel
+                  title="Uploaded File List"
+                  emptyLabel="No uploaded files or folders yet"
+                  entries={[...uploadedFiles, ...uploadedFolderFiles]}
+                />
+                <TreePanel
+                  title="Received File List"
+                  emptyLabel="No completed received files or folders yet"
+                  entries={inboxItems
+                    .filter((item) => item.complete)
+                    .map((item) => ({ path: item.name, size: item.size }))}
+                />
+              </div>
+
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Sending Transfers</h3>
 
@@ -2049,8 +2196,8 @@ export default function Home() {
             </section>
           )}
         </main>
-        </div>
       </div>
     </div>
+  </div>
   );
 }
