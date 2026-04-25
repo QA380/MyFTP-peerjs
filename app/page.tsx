@@ -542,7 +542,7 @@ export default function Home() {
 
   // Preloaded settings on web
   const modeHint = useMemo(
-    () => "Do not interact with settings above, unless know what you are doing.",
+    () => "DO NOT modify settings above, unless know what you are doing.",
     []
   );
 
