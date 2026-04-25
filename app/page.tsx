@@ -2011,7 +2011,6 @@ export default function Home() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
-                    sendCurrentMessage();
                   }
                 }}
               />
