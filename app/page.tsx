@@ -2105,7 +2105,6 @@ export default function Home() {
                               className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
                               onClick={() => setSendingItems((prev) => prev.filter((entry) => entry.id !== item.id))}
                               type="button"
-                              title="Remove row"
                             >
                               <X className="size-3.5" />
                             </button>
