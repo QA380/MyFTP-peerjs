@@ -2009,6 +2009,12 @@ export default function Home() {
                 placeholder="Name (optional)"
                 value={myName}
                 onChange={(e) => setMyName(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    sendCurrentMessage();
+                  }
+                }}
               />
 
               <button
@@ -2064,20 +2070,6 @@ export default function Home() {
           {/* Event log for sent messages, received messages, and transfer updates */}
           <section className="mt-4 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
-            <div className="mt-3 grid grid-cols-1 gap-2">
-              <input
-                className={inputClass}
-                placeholder="Name (optional)"
-                value={sender}
-                onChange={(e) => setSender(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    sendCurrentMessage();
-                  }
-                }}
-              />
-            </div>
             <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
               <input
                 className={inputClass}
