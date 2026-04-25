@@ -8,6 +8,7 @@ import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
 import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Bell, Download } from "lucide-react";
 
+
 type LogRow = {
   id: number;
   text: string;
@@ -541,7 +542,7 @@ export default function Home() {
 
   // Preloaded settings on web
   const modeHint = useMemo(
-    () => "For localhost, use port 9000, path /myapp, secure false.",
+    () => "Do not interact with settings above, unless know what you are doing.",
     []
   );
 
@@ -1596,6 +1597,8 @@ export default function Home() {
     }
   }, [myId, pushLog]);
 
+  
+
   const copyShareLink = useCallback(async () => {
     if (!peerShareLink) {
       pushLog("Peer share link is not ready yet.", true);
@@ -1980,9 +1983,6 @@ export default function Home() {
               </div>
 
               <p className="text-xs text-slate-400">{modeHint}</p>
-              <p className="text-xs text-slate-500">
-                Direct P2P is preferred via STUN. Set NEXT_PUBLIC_TURN_URL, NEXT_PUBLIC_TURN_USERNAME, and NEXT_PUBLIC_TURN_CREDENTIAL only when relay is required.
-              </p>
 
               <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300">
                 <strong className="text-slate-100">Peer ID:</strong>
