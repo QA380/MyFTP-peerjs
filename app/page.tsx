@@ -1624,14 +1624,23 @@ export default function Home() {
 
               <div className="rounded-lg border border-slate-700 bg-[#030712] px-3 py-2 text-xs text-slate-300">
                 <p className="font-mono uppercase tracking-wide text-slate-300">Connection Diagnostics</p>
-                <p className={`font-mono ${diagnostics.dataChannelState === "open" ? "text-emerald-300" : "text-amber-300"}`}>
+                <p 
+                  className={`font-mono ${diagnostics.dataChannelState === "open" 
+                    ? "text-emerald-300" 
+                    : "text-amber-300"}`}
+                >
                   Data channel......: {diagnostics.dataChannelState}
                 </p>
-                <p className={`font-mono ${diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-300" : "text-emerald-300"}`}>
+                <p 
+                  className={`font-mono ${
+                    diagnostics.bufferedAmount 
+                      > BUFFER_HIGH_WATERMARK 
+                      ? "text-rose-300" 
+                      : "text-emerald-300"}`}
+                >
                   Buffered outbound : {formatBytes(diagnostics.bufferedAmount)}
                 </p>
-                <p
-                  className={`font-mono ${
+                <p className={`font-mono ${
                     diagnostics.rttMs === null
                       ? "text-amber-300"
                       : diagnostics.rttMs > 220
