@@ -1898,7 +1898,7 @@ export default function Home() {
         </main>
 
         {/* Right-side workspace for calls, media previews, and file transfer tools */}
-        <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#0f0f0f]">
+        <main className="space-y-4 rounded-2xl border border-slate-800 bg-[#0f0f0f] p-5">
           <h1 className="text-2xl font-bold tracking-tight">Extra Functions</h1>
 
           {/* Call controls plus local and remote video panes */}
