@@ -24,7 +24,7 @@ Once connected you will be able to send message, file, or make a call. <br>
 
 
 ## My Notes
-For full system analysis [Click Here](https://github.com/QA380/MyFTP-peerjs/wiki)
+For full system analysis [**Click Here**]([https://github.com/QA380/MyFTP-peerjs/wiki](https://github.com/QA380/MyFTP-peerjs/wiki/Documentation))
 
 **Improvement to do:**
  *   Improve UI
