@@ -48,4 +48,3 @@ Once connected you will be able to send message, file, or make a call. <br>
  * Audio-Video did not terminated when call end
  * Cursor highlight when hover on files, highlight too bright
  * 
-   
