@@ -49,4 +49,3 @@ For full system analysis. [**Click Here**](https://github.com/QA380/MyFTP-peerjs
  * Ghost file appears, only 1 item sent yet 2 received but only 1 can be downloaded
  * Audio-Video did not terminated when call end
  * Cursor highlight when hover on files, highlight too bright
- * 
