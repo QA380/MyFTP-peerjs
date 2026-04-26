@@ -514,7 +514,6 @@ export default function Home() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const micEnabledRef = useRef(true);
   const cameraEnabledRef = useRef(true);
-
   // Telemetries
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
