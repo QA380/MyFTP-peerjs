@@ -15,7 +15,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 Or visit [`my-ftp-peerjs.vercel`](https://my-ftp-peerjs.vercel.app/) to see the demo.<br>
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-**This project was inspired from [filepizza](https://github.com/kern/filepizza)**
+**This project was inspired from [filepizza](https://github.com/kern/filepizza)**.
 
 ## Notes
 Connection can only be done with **two** people only, for now. <br>
@@ -24,7 +24,7 @@ Once connected you will be able to send message, file, or make a call. <br>
 
 
 ## My Notes
-For full system analysis [**Click Here**]([https://github.com/QA380/MyFTP-peerjs/wiki](https://github.com/QA380/MyFTP-peerjs/wiki/Documentation))
+For full system analysis. [**Click Here**](https://github.com/QA380/MyFTP-peerjs/wiki/Documentation)
 
 **Improvement to do:**
  *   Improve UI
