@@ -18,23 +18,34 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 **This project was inspired from [filepizza](https://github.com/kern/filepizza)**
 
 ## Notes
+Connection can only be done with **two** people only, for now. <br>
+To establish connection, only one of you need to give your ID to be entered. <br>
+Once connected you will be able to send message, file, or make a call. <br>
+
+
+## My Notes
 **Improvement to do:**
  *   Improve UI
-      - Improve color theme (visual)
-      - Improve visual background (visual)
-      - Replace/add multiple visual with animate-UI
-            - File inbox and send pool
-            - Progress bar
-            - Notification bar
-            - 
+      - Topbar rework
 
+ *   Add more topbar function
+      - Trusted device tab
+      - Settings
+      - Account
+      - Documentation/help page
 
- *   Add top bar (functional)
-      - Add: Home | Main |File Transfer | Direct Call |
-        dedicated feature for specific function
+**Features to add / system-update:**
+ * Account for repeated use
+ * Settings page
+ * Peer ID customization, and system rework
+ * Separate chat and log
+ * Network Optimization
 
  **Fix:**
- * Inbox received double the notifaction for single file
- * Toggling audio-video reset the connection
+ * ~~Inbox received double the notifaction for single file~~
+ * ~~Toggling audio-video reset the connection~~
+ * Ghost file appears, only 1 item sent yet 2 received but only 1 can be downloaded
+ * Audio-Video did not terminated when call end
+ * Cursor highlight when hover on files, highlight too bright
  * 
- * 
+   
