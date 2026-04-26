@@ -18,6 +18,8 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 **This project was inspired from [filepizza](https://github.com/kern/filepizza)**
 
 ## Notes
+This is a test to see if the branch work
+
 Connection can only be done with **two** people only, for now. <br>
 To establish connection, only one of you need to give your ID to be entered. <br>
 Once connected you will be able to send message, file, or make a call. <br>
