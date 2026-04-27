@@ -171,7 +171,45 @@ function Sidebar({
   transition = { type: 'spring', stiffness: 350, damping: 35 },
   ...props
 }: SidebarProps) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, state, open, setOpen, openMobile, setOpenMobile } = useSidebar();
+  const hoverTimerRef = React.useRef<number | null>(null);
+  const hoverExpandedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (state === 'expanded') {
+      hoverExpandedRef.current = false;
+    }
+  }, [state]);
+
+  const handleMouseEnter = React.useCallback(() => {
+    if (isMobile || collapsible === 'none' || state !== 'collapsed') {
+      return;
+    }
+
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+
+    hoverExpandedRef.current = true;
+    setOpen(true);
+  }, [collapsible, isMobile, setOpen, state]);
+
+  const handleMouseLeave = React.useCallback(() => {
+    if (isMobile || collapsible === 'none' || !hoverExpandedRef.current) {
+      return;
+    }
+
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+    }
+
+    hoverTimerRef.current = window.setTimeout(() => {
+      hoverExpandedRef.current = false;
+      setOpen(false);
+      hoverTimerRef.current = null;
+    }, 120);
+  }, [collapsible, isMobile, setOpen]);
 
   if (collapsible === 'none') {
     return (
@@ -239,6 +277,8 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       {/* This is what handles the sidebar gap on desktop */}
       <div

@@ -13,6 +13,7 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupLabel,
+  SidebarHeader,
   SidebarInset,
   SidebarMenu,
   SidebarMenuButton,
@@ -525,7 +526,7 @@ export default function Home() {
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
   const [workspaceSplit, setWorkspaceSplit] = useState(64);
-  const [authEmail, setAuthEmail] = useState("");
+  const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [trustedPeers, setTrustedPeers] = useState<string[]>([]);
@@ -583,6 +584,11 @@ export default function Home() {
 
     return buildShareLink(myId);
   }, [myId]);
+
+  const toAuthEmail = useCallback((username: string) => {
+    const normalized = username.trim().toLowerCase().replace(/\s+/g, ".");
+    return `${normalized}@myftp.local`;
+  }, []);
 
   const pushLog = useCallback((line: string, error = false) => {
     const stamp = new Date().toLocaleTimeString();
@@ -1767,13 +1773,13 @@ export default function Home() {
   }, [pushLog]);
 
   const signUpAccount = useCallback(async () => {
-    if (!authEmail.trim() || !authPassword.trim()) {
-      pushLog("Email and password are required for sign up.", true);
+    if (!authUsername.trim() || !authPassword.trim()) {
+      pushLog("Username and password are required for sign up.", true);
       return;
     }
 
     const { error } = await supabase.auth.signUp({
-      email: authEmail.trim(),
+      email: toAuthEmail(authUsername),
       password: authPassword,
     });
 
@@ -1782,17 +1788,17 @@ export default function Home() {
       return;
     }
 
-    pushLog("Sign up succeeded. Check your email if confirmation is enabled.");
-  }, [authEmail, authPassword, pushLog]);
+    pushLog("Sign up succeeded. Check your username account if confirmation is enabled.");
+  }, [authUsername, authPassword, pushLog, toAuthEmail]);
 
   const signInAccount = useCallback(async () => {
-    if (!authEmail.trim() || !authPassword.trim()) {
-      pushLog("Email and password are required for sign in.", true);
+    if (!authUsername.trim() || !authPassword.trim()) {
+      pushLog("Username and password are required for sign in.", true);
       return;
     }
 
     const { error } = await supabase.auth.signInWithPassword({
-      email: authEmail.trim(),
+      email: toAuthEmail(authUsername),
       password: authPassword,
     });
 
@@ -1802,7 +1808,7 @@ export default function Home() {
     }
 
     pushLog("Signed in.");
-  }, [authEmail, authPassword, pushLog]);
+  }, [authUsername, authPassword, pushLog, toAuthEmail]);
 
   const signOutAccount = useCallback(async () => {
     const { error } = await supabase.auth.signOut();
@@ -2130,31 +2136,43 @@ export default function Home() {
           variant="sidebar"
         >
           <SidebarContent>
-            <div className="flex items-center justify-end px-2 pt-2">
+            <SidebarHeader className="px-2 pt-2">
+              <div className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-[#030712] px-3 py-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-cyan-500 text-sm font-black text-slate-950">
+                  MP
+                </div>
+                <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+                  <p className="truncate text-sm font-semibold text-slate-100">MyFTP PeerJS</p>
+                  <p className="truncate text-[11px] text-slate-400">Workspace 2</p>
+                </div>
+              </div>
+            </SidebarHeader>
+
+            <div className="flex items-center justify-end px-2 pt-2 group-data-[collapsible=icon]:justify-center">
               <SidebarTrigger className="text-slate-300 hover:bg-slate-800 hover:text-slate-100" />
             </div>
 
-            <SidebarGroup>
+            <SidebarGroup className="group-data-[collapsible=icon]:p-1">
               <SidebarGroupLabel className="text-slate-400">Workspace 2</SidebarGroupLabel>
               <SidebarMenu>
                 <SidebarMenuItem>
                   <SidebarMenuButton className="text-slate-200" isActive>
                     <House className="size-4" />
-                    <span>Home</span>
+                    <span className="group-data-[collapsible=icon]:hidden">Home</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroup>
 
-            <SidebarGroup>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden">
               <SidebarGroupLabel className="text-slate-400">Account</SidebarGroupLabel>
               <div className="space-y-2 px-2 pb-2">
                 <input
                   className={inputClass}
-                  onChange={(event) => setAuthEmail(event.target.value)}
-                  placeholder="Account email"
-                  type="email"
-                  value={authEmail}
+                  onChange={(event) => setAuthUsername(event.target.value)}
+                  placeholder="Username"
+                  type="text"
+                  value={authUsername}
                 />
                 <input
                   className={inputClass}
@@ -2185,7 +2203,7 @@ export default function Home() {
               </div>
             </SidebarGroup>
 
-            <SidebarGroup>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden">
               <SidebarGroupLabel className="text-slate-400">Trusted Connections</SidebarGroupLabel>
               <div className="space-y-2 px-2 pb-2">
                 {trustedPeers.length === 0 ? (
@@ -2214,12 +2232,19 @@ export default function Home() {
           </SidebarContent>
           <SidebarFooter className="p-2">
             <div
-              className="mb-2 rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-xs text-slate-300"
+              className="mb-2 rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-xs text-slate-300 group-data-[collapsible=icon]:hidden"
               onClick={() => setNotifications({ call: false, file: false, connection: false })}
               role="button"
               tabIndex={0}
             >
               {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
+            </div>
+            <div className="hidden items-center justify-center rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-slate-300 group-data-[collapsible=icon]:flex">
+              <div className="flex items-center gap-1">
+                <span className="size-2 rounded-full bg-cyan-400" />
+                <span className="size-2 rounded-full bg-emerald-400" />
+                <span className="size-2 rounded-full bg-rose-400" />
+              </div>
             </div>
           </SidebarFooter>
           <SidebarRail />
