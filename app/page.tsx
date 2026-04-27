@@ -1480,11 +1480,11 @@ export default function Home() {
         return;
       }
 
-      const constraints =
-        kind === "video" ? { audio: true, video: true } : { audio: true, video: false };
+      // const constraints =
+      //   kind === "video" ? { audio: true, video: true } : { audio: true, video: false };
 
       try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const stream = await navigator.mediaDevices.getUserMedia();
         setLocalStream(stream);
 
         if (mediaConnRef.current) {
