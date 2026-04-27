@@ -6,7 +6,7 @@ import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
-import { NotificationList } from "@/components/animate-ui/components/community/notification-list";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import {
   Sidebar,
   SidebarContent,
@@ -488,7 +488,7 @@ function TreePanel({
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"home" | "transfer" | "call">("home");
+  const [panelTab, setPanelTab] = useState<"transfer" | "call">("transfer");
   const [notifications, setNotifications] = useState({
     call: false,
     file: false,
@@ -2132,24 +2132,78 @@ export default function Home() {
               <SidebarGroupLabel className="text-slate-400">Workspace 2</SidebarGroupLabel>
               <SidebarMenu>
                 <SidebarMenuItem>
-                  <SidebarMenuButton className="text-slate-200" isActive={activeTab === "home"} onClick={() => setActiveTab("home")}>
+                  <SidebarMenuButton className="text-slate-200" isActive>
                     <House className="size-4" />
                     <span>Home</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton className="text-slate-200" isActive={activeTab === "transfer"} onClick={() => setActiveTab("transfer")}>
-                    <Folder className="size-4" />
-                    <span>Transfer</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton className="text-slate-200" isActive={activeTab === "call"} onClick={() => setActiveTab("call")}>
-                    <Phone className="size-4" />
-                    <span>Call</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
               </SidebarMenu>
+            </SidebarGroup>
+
+            <SidebarGroup>
+              <SidebarGroupLabel className="text-slate-400">Account</SidebarGroupLabel>
+              <div className="space-y-2 px-2 pb-2">
+                <input
+                  className={inputClass}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  placeholder="Account email"
+                  type="email"
+                  value={authEmail}
+                />
+                <input
+                  className={inputClass}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  placeholder="Account password"
+                  type="password"
+                  value={authPassword}
+                />
+                <button className={buttonClass} onClick={signUpAccount} type="button">
+                  <UserPlus className="mr-2 inline size-4" />
+                  Sign Up
+                </button>
+                <button className={buttonClass} onClick={signInAccount} type="button">
+                  <LogIn className="mr-2 inline size-4" />
+                  Sign In
+                </button>
+                <button
+                  className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                  onClick={signOutAccount}
+                  type="button"
+                >
+                  <LogOut className="mr-2 inline size-4" />
+                  Sign Out
+                </button>
+                <p className="text-xs text-slate-300">
+                  {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
+                </p>
+              </div>
+            </SidebarGroup>
+
+            <SidebarGroup>
+              <SidebarGroupLabel className="text-slate-400">Trusted Connections</SidebarGroupLabel>
+              <div className="space-y-2 px-2 pb-2">
+                {trustedPeers.length === 0 ? (
+                  <p className="rounded-lg border border-slate-700 bg-[#030712] px-2 py-2 text-xs text-slate-400">No trusted peers saved yet.</p>
+                ) : (
+                  trustedPeers.map((peerId) => (
+                    <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-[#030712] px-2 py-2">
+                      <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
+                      <button
+                        className="rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+                        onClick={() => {
+                          setTargetId(peerId);
+                          setPanelTab("transfer");
+                          window.setTimeout(() => connectToTarget(), 0);
+                        }}
+                        type="button"
+                      >
+                        <ShieldCheck className="mr-1 inline size-3" />
+                        Reconnect
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             </SidebarGroup>
           </SidebarContent>
           <SidebarFooter className="p-2">
@@ -2161,7 +2215,6 @@ export default function Home() {
             >
               {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
             </div>
-            <NotificationList />
           </SidebarFooter>
         </Sidebar>
 
@@ -2442,8 +2495,21 @@ export default function Home() {
         >
           <h1 className="text-2xl font-bold tracking-tight">Extra Functions</h1>
 
+          <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call") }>
+            <TabsList>
+              <TabsTrigger value="transfer">
+                <Folder className="mr-2 size-4" />
+                Transfer
+              </TabsTrigger>
+              <TabsTrigger value="call">
+                <Phone className="mr-2 size-4" />
+                Call
+              </TabsTrigger>
+            </TabsList>
+
           {/* Call controls plus local and remote video panes */}
-          <section className={`rounded-xl border border-slate-800 bg-[#0e182b]/75 p-3 ${activeTab !== "call" ? "hidden" : ""}`}>
+          <TabsContent value="call">
+          <section className="rounded-xl border border-slate-800 bg-[#0e182b]/75 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -2522,9 +2588,11 @@ export default function Home() {
 
             <p className="mt-3 text-xs text-slate-400">Secured Network</p>
           </section>
+          </TabsContent>
 
           {/* File and folder upload controls plus sender/receiver progress panels */}
-          <section className={`rounded-xl border border-slate-800 bg-[#121d31]/75 p-3 ${activeTab !== "transfer" ? "hidden" : ""}`}>
+          <TabsContent value="transfer">
+          <section className="rounded-xl border border-slate-800 bg-[#121d31]/75 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">File Transfer</h2>
             <div className="mt-3 space-y-2">
               <input
@@ -2715,80 +2783,8 @@ export default function Home() {
               </div>
             </div>
           </section>
-
-          {activeTab === "home" && (
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#0f172a]/70 p-3 text-sm text-slate-300">
-              <p className="font-semibold text-slate-100">Home Workspace</p>
-              <p className="text-xs text-slate-400">Account and trusted reconnection live here.</p>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <input
-                  className={inputClass}
-                  onChange={(event) => setAuthEmail(event.target.value)}
-                  placeholder="Account email"
-                  type="email"
-                  value={authEmail}
-                />
-                <input
-                  className={inputClass}
-                  onChange={(event) => setAuthPassword(event.target.value)}
-                  placeholder="Account password"
-                  type="password"
-                  value={authPassword}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <button className={buttonClass} onClick={signUpAccount} type="button">
-                  <UserPlus className="mr-2 inline size-4" />
-                  Sign Up
-                </button>
-                <button className={buttonClass} onClick={signInAccount} type="button">
-                  <LogIn className="mr-2 inline size-4" />
-                  Sign In
-                </button>
-                <button
-                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
-                  onClick={signOutAccount}
-                  type="button"
-                >
-                  <LogOut className="mr-2 inline size-4" />
-                  Sign Out
-                </button>
-              </div>
-
-              <p className="text-xs text-slate-300">
-                Account status: {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
-              </p>
-
-              <div className="rounded-xl border border-slate-700 bg-[#030712] p-3">
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Trusted Connections</p>
-                {trustedPeers.length === 0 ? (
-                  <p className="text-xs text-slate-400">No trusted peers saved yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {trustedPeers.map((peerId) => (
-                      <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 px-2 py-1">
-                        <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
-                        <button
-                          className="rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
-                          onClick={() => {
-                            setTargetId(peerId);
-                            setActiveTab("transfer");
-                            window.setTimeout(() => connectToTarget(), 0);
-                          }}
-                          type="button"
-                        >
-                          <ShieldCheck className="mr-1 inline size-3" />
-                          Reconnect
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
+          </TabsContent>
+          </Tabs>
         </main>
       </div>
     </div>
