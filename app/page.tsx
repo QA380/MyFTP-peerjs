@@ -2224,7 +2224,7 @@ export default function Home() {
                   value={secure}
                   onChange={(e) => setSecure(e.target.value)}
                 />
-                <button className={buttonClass} onClick={makePeer}>
+                <button className={buttonClass} onClick={() => makePeer()}>
                   Reconnect Peer
                 </button>
                 <button
