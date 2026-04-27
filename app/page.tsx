@@ -1481,7 +1481,7 @@ export default function Home() {
       }
 
       const constraints =
-        kind === "video" ? { audio: true, video: true } : { audio: true, video: false };
+        kind === "video" ? { audio: false, video: false } : { audio: false, video: false };
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
