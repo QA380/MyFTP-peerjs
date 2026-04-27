@@ -18,6 +18,8 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
+  SidebarRail,
+  SidebarTrigger,
 } from "@/components/animate-ui/components/radix/sidebar";
 import { supabase } from "@/lib/supabase";
 import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Download, UserPlus, LogIn, LogOut, ShieldCheck } from "lucide-react";
@@ -2128,6 +2130,10 @@ export default function Home() {
           variant="sidebar"
         >
           <SidebarContent>
+            <div className="flex items-center justify-end px-2 pt-2">
+              <SidebarTrigger className="text-slate-300 hover:bg-slate-800 hover:text-slate-100" />
+            </div>
+
             <SidebarGroup>
               <SidebarGroupLabel className="text-slate-400">Workspace 2</SidebarGroupLabel>
               <SidebarMenu>
@@ -2216,6 +2222,7 @@ export default function Home() {
               {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
             </div>
           </SidebarFooter>
+          <SidebarRail />
         </Sidebar>
 
         <SidebarInset className="bg-transparent">
