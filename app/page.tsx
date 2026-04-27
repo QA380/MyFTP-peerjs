@@ -6,7 +6,21 @@ import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
-import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Bell, Download } from "lucide-react";
+import { NotificationList } from "@/components/animate-ui/components/community/notification-list";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+} from "@/components/animate-ui/components/radix/sidebar";
+import { supabase } from "@/lib/supabase";
+import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Download, UserPlus, LogIn, LogOut, ShieldCheck } from "lucide-react";
 
 
 type LogRow = {
@@ -120,6 +134,14 @@ type ControlMessage =
   | {
       kind: "file-end";
       transferId: string;
+    }
+  | {
+      kind: "transfer-cancel";
+      transferId: string;
+    }
+  | {
+      kind: "call-end";
+      reason: "hangup" | "disconnect";
     };
 
     // Pending metadata for the next raw binary chunk
@@ -230,6 +252,7 @@ type TreeNode = {
 const normalizePathParts = (path: string) => path.replaceAll("\\", "/").split("/").filter(Boolean);
 
 const PEER_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const LOCAL_PEER_ID_KEY = "myftp.peer.id";
 
 const generateSimplePeerId = (length = 8): string => {
   const randomValues = new Uint32Array(length);
@@ -500,6 +523,10 @@ export default function Home() {
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
   const [workspaceSplit, setWorkspaceSplit] = useState(64);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [trustedPeers, setTrustedPeers] = useState<string[]>([]);
   // Live connection diagnostics for route and buffer health
   const [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics>({
     dataChannelState: "closed",
@@ -534,6 +561,8 @@ export default function Home() {
   const workerQueueRunningRef = useRef(false);
   const workspaceShellRef = useRef<HTMLDivElement | null>(null);
   const isResizingWorkspaceRef = useRef(false);
+  const cancelledIncomingTransfersRef = useRef<Set<string>>(new Set());
+  const cancelledOutgoingTransfersRef = useRef<Set<string>>(new Set());
   const transferPromisesRef = useRef<
     Map<string, { resolve: () => void; reject: (error: Error) => void }>
   >(new Map());
@@ -712,7 +741,9 @@ export default function Home() {
         parsed.kind === "transfer-start" ||
         parsed.kind === "file-start" ||
         parsed.kind === "file-chunk-meta" ||
-        parsed.kind === "file-end"
+        parsed.kind === "file-end" ||
+        parsed.kind === "transfer-cancel" ||
+        parsed.kind === "call-end"
       ) {
         return parsed as ControlMessage;
       }
@@ -721,6 +752,23 @@ export default function Home() {
       return null;
     }
   }, []);
+
+  const endActiveCall = useCallback((reason: "hangup" | "disconnect", notifyRemote: boolean) => {
+    if (notifyRemote && activeConnRef.current?.open) {
+      sendControlMessage(activeConnRef.current, {
+        kind: "call-end",
+        reason,
+      });
+    }
+
+    mediaConnRef.current?.close();
+    mediaConnRef.current = null;
+    stopStream(localStreamRef.current);
+    localStreamRef.current = null;
+    setCallType(null);
+    stopAudioMeter();
+    clearMediaStreams();
+  }, [clearMediaStreams, sendControlMessage, stopAudioMeter, stopStream]);
 
   // Convert finished receiver-side transfer into a downloadable inbox item
   const flushInboxTransfer = useCallback((transferId: string) => {
@@ -734,20 +782,41 @@ export default function Home() {
     const elapsedSeconds = Math.max((Date.now() - transfer.startedAt) / 1000, 0.001);
     const rate = transfer.receivedBytes / elapsedSeconds;
 
-    setInboxItems((prev) => [
-      {
-        id: transfer.id,
-        source: transfer.source,
-        name: transfer.name,
-        size: transfer.size,
-        mime: transfer.mime,
-        url,
-        progress: 1,
-        rate,
-        complete: true,
-      },
-      ...prev,
-    ]);
+    setInboxItems((prev) => {
+      const exists = prev.some((item) => item.id === transfer.id);
+      if (exists) {
+        return prev.map((item) => (
+          item.id === transfer.id
+            ? {
+                ...item,
+                source: transfer.source,
+                name: transfer.name,
+                size: transfer.size,
+                mime: transfer.mime,
+                url,
+                progress: 1,
+                rate,
+                complete: true,
+              }
+            : item
+        ));
+      }
+
+      return [
+        {
+          id: transfer.id,
+          source: transfer.source,
+          name: transfer.name,
+          size: transfer.size,
+          mime: transfer.mime,
+          url,
+          progress: 1,
+          rate,
+          complete: true,
+        },
+        ...prev,
+      ];
+    });
 
     activeInboxTransfersRef.current.delete(transferId);
     pushLog(`Received file ready in inbox: ${transfer.name} (${formatBytes(transfer.size)}).`);
@@ -841,6 +910,14 @@ export default function Home() {
   // Handle worker output in order so file metadata and raw chunks stay paired
   const processWorkerMessage = useCallback(
     async (payload: WorkerOutboundMessage) => {
+      if (cancelledOutgoingTransfersRef.current.has(payload.transferId)) {
+        if (payload.type === "prepared-end" || payload.type === "prepared-error") {
+          transferPromisesRef.current.delete(payload.transferId);
+          sendingTransfersRef.current.delete(payload.transferId);
+        }
+        return;
+      }
+
       if (payload.type === "prepared-error") {
         transferPromisesRef.current.get(payload.transferId)?.reject(new Error(payload.message));
         transferPromisesRef.current.delete(payload.transferId);
@@ -923,6 +1000,7 @@ export default function Home() {
 
   // Create the receiver-side transfer record when a new file starts
   const beginInboxTransfer = useCallback((payload: FileTransferStart) => {
+    cancelledIncomingTransfersRef.current.delete(payload.transferId);
     const exists = activeInboxTransfersRef.current.get(payload.transferId);
     if (!exists) {
       activeInboxTransfersRef.current.set(payload.transferId, {
@@ -1085,6 +1163,19 @@ export default function Home() {
 
   // Clear inbox
   const clearInbox = useCallback(() => {
+    const activeIds = Array.from(activeInboxTransfersRef.current.keys());
+    const conn = activeConnRef.current;
+
+    for (const id of activeIds) {
+      cancelledIncomingTransfersRef.current.add(id);
+      if (conn?.open) {
+        sendControlMessage(conn, {
+          kind: "transfer-cancel",
+          transferId: id,
+        });
+      }
+    }
+
     activeInboxTransfersRef.current.clear();
     inboxItemsRef.current.forEach((item) => {
       if (item.url) {
@@ -1093,10 +1184,18 @@ export default function Home() {
     });
     setInboxItems([]);
     pushLog("Cleared received inbox.");
-  }, [pushLog]);
+  }, [pushLog, sendControlMessage]);
 
   // Remove single inbox item and revoke its download URL
   const removeInboxItem = useCallback((id: string) => {
+    cancelledIncomingTransfersRef.current.add(id);
+    if (activeConnRef.current?.open) {
+      sendControlMessage(activeConnRef.current, {
+        kind: "transfer-cancel",
+        transferId: id,
+      });
+    }
+
     setInboxItems((prev) => {
       const target = prev.find((item) => item.id === id);
       if (target && target.url) {
@@ -1105,7 +1204,7 @@ export default function Home() {
       activeInboxTransfersRef.current.delete(id);
       return prev.filter((item) => item.id !== id);
     });
-  }, []);
+  }, [sendControlMessage]);
 
   // Wire the live data-channel listeners for chat, transfer, and close events
   const wireConnection = useCallback(
@@ -1165,6 +1264,12 @@ export default function Home() {
           }
 
           if (control.kind === "file-end") {
+            if (cancelledIncomingTransfersRef.current.has(control.transferId)) {
+              activeInboxTransfersRef.current.delete(control.transferId);
+              pendingChunkMetaRef.current = null;
+              return;
+            }
+
             const transfer = activeInboxTransfersRef.current.get(control.transferId);
             if (!transfer) {
               pushLog(`Received file end without a matching transfer.`, true);
@@ -1172,6 +1277,22 @@ export default function Home() {
             }
 
             flushInboxTransfer(control.transferId);
+            return;
+          }
+
+          if (control.kind === "transfer-cancel") {
+            cancelledOutgoingTransfersRef.current.add(control.transferId);
+            transferPromisesRef.current.get(control.transferId)?.reject(new Error("Transfer canceled by receiver"));
+            transferPromisesRef.current.delete(control.transferId);
+            sendingTransfersRef.current.delete(control.transferId);
+            setSendingItems((prev) => prev.filter((item) => item.id !== control.transferId));
+            pushLog(`Receiver canceled transfer ${control.transferId}.`);
+            return;
+          }
+
+          if (control.kind === "call-end") {
+            endActiveCall(control.reason, false);
+            pushLog("Call ended by remote peer.");
             return;
           }
 
@@ -1188,7 +1309,9 @@ export default function Home() {
 
         const transfer = activeInboxTransfersRef.current.get(meta.transferId);
         if (!transfer) {
-          pushLog("Received file chunk for unknown transfer.", true);
+          if (!cancelledIncomingTransfersRef.current.has(meta.transferId)) {
+            pushLog("Received file chunk for unknown transfer.", true);
+          }
           pendingChunkMetaRef.current = null;
           return;
         }
@@ -1202,6 +1325,7 @@ export default function Home() {
 
       conn.on("close", () => {
         pushLog("Connection closed");
+        endActiveCall("disconnect", false);
         activeConnRef.current = null;
         pendingChunkMetaRef.current = null;
         setConnState("Not connected");
@@ -1211,15 +1335,25 @@ export default function Home() {
         pushLog(`Connection error: ${err.message || err}`, true);
       });
     },
-    [beginInboxTransfer, extractArrayBuffer, flushInboxTransfer, parseControlMessage, pushLog, updateInboxTransferProgress]
+    [beginInboxTransfer, endActiveCall, extractArrayBuffer, flushInboxTransfer, parseControlMessage, pushLog, updateInboxTransferProgress]
   );
 
   // Destroy and recreate the PeerJS client with the current server settings
-  const makePeer = useCallback(() => {
-    const connectWithId = (attempt = 0) => {
-      const desiredId = generateSimplePeerId(8);
+  const makePeer = useCallback((forceNewId = false) => {
+    const connectWithId = (attempt = 0, baseId?: string) => {
+      let desiredId = baseId;
+
+      if (!desiredId) {
+        const storedId = typeof window !== "undefined" ? localStorage.getItem(LOCAL_PEER_ID_KEY) : null;
+        desiredId = forceNewId || !storedId ? generateSimplePeerId(8) : storedId;
+      }
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem(LOCAL_PEER_ID_KEY, desiredId);
+      }
 
       if (peerRef.current) {
+        endActiveCall("disconnect", false);
         try {
           peerRef.current.destroy();
         } catch (err) {
@@ -1299,8 +1433,7 @@ export default function Home() {
             pushLog(`Call stream received from ${call.peer}`);
           });
           call.on("close", () => {
-            setCallType(null);
-            clearMediaStreams();
+            endActiveCall("hangup", false);
             pushLog("Incoming call closed.");
           });
           call.on("error", (err) => pushLog(`Incoming call error: ${err.message || err}`, true));
@@ -1313,7 +1446,11 @@ export default function Home() {
       peer.on("error", (err) => {
         if ((err as { type?: string }).type === "unavailable-id" && attempt < 2) {
           pushLog("Peer ID collision detected. Generating a new ID...", true);
-          connectWithId(attempt + 1);
+          const nextId = generateSimplePeerId(8);
+          if (typeof window !== "undefined") {
+            localStorage.setItem(LOCAL_PEER_ID_KEY, nextId);
+          }
+          connectWithId(attempt + 1, nextId);
           return;
         }
 
@@ -1322,7 +1459,7 @@ export default function Home() {
     };
 
     connectWithId();
-  }, [clearMediaStreams, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, wireConnection]);
+  }, [endActiveCall, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, wireConnection]);
 
   // Apply the cloud or local defaults when the mode changes
   const applyModeDefaults = useCallback(
@@ -1372,6 +1509,8 @@ export default function Home() {
       return;
     }
 
+    endActiveCall("disconnect", true);
+
     try {
       activeConnRef.current.close();
     } catch (err) {
@@ -1381,7 +1520,7 @@ export default function Home() {
     activeConnRef.current = null;
     setConnState("Not connected");
     pushLog("Disconnected from peer.");
-  }, [pushLog]);
+  }, [endActiveCall, pushLog]);
 
   // Send chat line that currently typed into input box
   const sendCurrentMessage = useCallback(() => {
@@ -1454,8 +1593,12 @@ export default function Home() {
           chunkSize: FILE_CHUNK_SIZE,
         } satisfies WorkerInboundMessage);
 
-        await completion;
-        pushLog(`Sent ${label.toLowerCase()}: ${fileName} (${formatBytes(file.size)})`);
+        try {
+          await completion;
+          pushLog(`Sent ${label.toLowerCase()}: ${fileName} (${formatBytes(file.size)})`);
+        } catch (err) {
+          pushLog(`Transfer canceled/failed for ${fileName}: ${String(err)}`, true);
+        }
       }
 
       pushLog(`${label} upload complete. ${files.length} item(s) sent successfully.`);
@@ -1481,7 +1624,7 @@ export default function Home() {
       }
 
       const constraints =
-        kind === "video" ? { audio: false, video: false } : { audio: false, video: false };
+        kind === "video" ? { audio: true, video: true } : { audio: true, video: false };
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -1500,8 +1643,7 @@ export default function Home() {
           pushLog(`${kind === "video" ? "Video" : "Audio"} call connected.`);
         });
         call.on("close", () => {
-          setCallType(null);
-          clearMediaStreams();
+          endActiveCall("hangup", false);
           pushLog("Call closed.");
         });
         call.on("error", (err) => pushLog(`Call error: ${err.message || err}`, true));
@@ -1510,7 +1652,7 @@ export default function Home() {
         pushLog(`Could not start ${kind} call: ${String(err)}`, true);
       }
     },
-    [clearMediaStreams, pushLog, requireConnection, setLocalStream, setRemoteStream]
+    [endActiveCall, pushLog, requireConnection, setLocalStream, setRemoteStream]
   );
 
   // End the active call and stop audio-video capture
@@ -1520,15 +1662,9 @@ export default function Home() {
       return;
     }
 
-    mediaConnRef.current?.close();
-    mediaConnRef.current = null;
-    stopStream(localStreamRef.current);
-    localStreamRef.current = null;
-    setCallType(null);
-    stopAudioMeter();
-    clearMediaStreams();
+    endActiveCall("hangup", true);
     pushLog("Call ended.");
-  }, [clearMediaStreams, pushLog, stopAudioMeter, stopStream]);
+  }, [endActiveCall, pushLog]);
 
   // Toggle the microphone track without disconnecting call
   const toggleMic = useCallback(() => {
@@ -1611,6 +1747,129 @@ export default function Home() {
       pushLog(`Could not copy share link: ${String(err)}`, true);
     }
   }, [peerShareLink, pushLog]);
+
+  const loadTrustedConnections = useCallback(async (userId: string) => {
+    const { data, error } = await supabase
+      .from("trusted_connections")
+      .select("peer_id")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      pushLog(`Could not load trusted connections: ${error.message}`, true);
+      return;
+    }
+
+    const peers = Array.from(new Set((data ?? []).map((row) => row.peer_id).filter(Boolean)));
+    setTrustedPeers(peers);
+  }, [pushLog]);
+
+  const signUpAccount = useCallback(async () => {
+    if (!authEmail.trim() || !authPassword.trim()) {
+      pushLog("Email and password are required for sign up.", true);
+      return;
+    }
+
+    const { error } = await supabase.auth.signUp({
+      email: authEmail.trim(),
+      password: authPassword,
+    });
+
+    if (error) {
+      pushLog(`Sign up failed: ${error.message}`, true);
+      return;
+    }
+
+    pushLog("Sign up succeeded. Check your email if confirmation is enabled.");
+  }, [authEmail, authPassword, pushLog]);
+
+  const signInAccount = useCallback(async () => {
+    if (!authEmail.trim() || !authPassword.trim()) {
+      pushLog("Email and password are required for sign in.", true);
+      return;
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authEmail.trim(),
+      password: authPassword,
+    });
+
+    if (error) {
+      pushLog(`Sign in failed: ${error.message}`, true);
+      return;
+    }
+
+    pushLog("Signed in.");
+  }, [authEmail, authPassword, pushLog]);
+
+  const signOutAccount = useCallback(async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      pushLog(`Sign out failed: ${error.message}`, true);
+      return;
+    }
+    setTrustedPeers([]);
+    setAuthUserId(null);
+    pushLog("Signed out.");
+  }, [pushLog]);
+
+  const saveTrustedConnection = useCallback(async () => {
+    if (!authUserId) {
+      pushLog("Sign in first to save trusted connections.", true);
+      return;
+    }
+
+    const peerId = targetId.trim();
+    if (!peerId) {
+      pushLog("Enter a target peer ID before saving trusted connection.", true);
+      return;
+    }
+
+    const { error } = await supabase.from("trusted_connections").insert({
+      user_id: authUserId,
+      peer_id: peerId,
+    });
+
+    if (error) {
+      pushLog(`Could not save trusted connection: ${error.message}`, true);
+      return;
+    }
+
+    setTrustedPeers((prev) => (prev.includes(peerId) ? prev : [peerId, ...prev]));
+    pushLog(`Trusted connection saved for ${peerId}.`);
+  }, [authUserId, pushLog, targetId]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    void supabase.auth.getSession().then(({ data }) => {
+      const userId = data.session?.user.id ?? null;
+      if (!mounted) {
+        return;
+      }
+      setAuthUserId(userId);
+      if (userId) {
+        void loadTrustedConnections(userId);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const userId = session?.user.id ?? null;
+      setAuthUserId(userId);
+      if (userId) {
+        void loadTrustedConnections(userId);
+      } else {
+        setTrustedPeers([]);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [loadTrustedConnections]);
 
   // Start/stop worker when the component unmounts
   useEffect(() => {
@@ -1859,66 +2118,55 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
-      <SpeedInsights />
-        <header className="fixed inset-x-0 top-0 z-20 border-b border-slate-800 bg-[#020617] px-0">
-          <div className="mx-auto flex w-full max-w-[96rem] flex-wrap items-center justify-between gap-3 px-2 py-3 sm:px-3 lg:px-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                  activeTab === "home"
-                    ? "bg-cyan-500 text-slate-950"
-                    : "border border-slate-700 bg-[#0b1220] text-slate-200 hover:bg-[#131d33]"
-                }`}
-                onClick={() => setActiveTab("home")}
-                type="button"
-              >
-                <House className="size-4" />
-                Home
-              </button>
-              <button
-                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                  activeTab === "transfer"
-                    ? "bg-cyan-500 text-slate-950"
-                    : "border border-slate-700 bg-[#0b1220] text-slate-200 hover:bg-[#131d33]"
-                }`}
-                onClick={() => setActiveTab("transfer")}
-                type="button"
-              >
-                <Folder className="size-4" />
-                File Transfer
-              </button>
-              <button
-                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                  activeTab === "call"
-                    ? "bg-cyan-500 text-slate-950"
-                    : "border border-slate-700 bg-[#0b1220] text-slate-200 hover:bg-[#131d33]"
-                }`}
-                onClick={() => setActiveTab("call")}
-                type="button"
-              >
-                <Phone className="size-4" />
-                Call
-              </button>
-            </div>
-            <button
-              className="relative inline-flex items-center justify-center rounded-xl border border-slate-700 bg-[#0b1220] p-2 text-slate-200 transition hover:bg-[#131d33]"
+    <SidebarProvider defaultOpen>
+      <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
+        <SpeedInsights />
+        <Sidebar
+          className="border-r border-slate-800 bg-[#020617]"
+          collapsible="icon"
+          containerClassName="bg-[#020617]"
+          variant="sidebar"
+        >
+          <SidebarContent>
+            <SidebarGroup>
+              <SidebarGroupLabel className="text-slate-400">Workspace 2</SidebarGroupLabel>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton className="text-slate-200" isActive={activeTab === "home"} onClick={() => setActiveTab("home")}>
+                    <House className="size-4" />
+                    <span>Home</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton className="text-slate-200" isActive={activeTab === "transfer"} onClick={() => setActiveTab("transfer")}>
+                    <Folder className="size-4" />
+                    <span>Transfer</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton className="text-slate-200" isActive={activeTab === "call"} onClick={() => setActiveTab("call")}>
+                    <Phone className="size-4" />
+                    <span>Call</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroup>
+          </SidebarContent>
+          <SidebarFooter className="p-2">
+            <div
+              className="mb-2 rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-xs text-slate-300"
               onClick={() => setNotifications({ call: false, file: false, connection: false })}
-              type="button"
-              title="Notifications"
+              role="button"
+              tabIndex={0}
             >
-              {(notifications.call || notifications.file || notifications.connection) && (
-                <>
-                  <span className="pointer-events-none absolute inset-0 m-auto size-8 rounded-full bg-white/65 animate-ping" />
-                  <span className="pointer-events-none absolute inset-0 m-auto size-8 rounded-full bg-white/30 animate-pulse" />
-                </>
-              )}
-              <Bell className="relative z-10 size-4" />
-            </button>
-          </div>
-      </header>
+              {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
+            </div>
+            <NotificationList />
+          </SidebarFooter>
+        </Sidebar>
 
-      <div className="mx-auto w-full max-w-[96rem] px-2 pb-5 pt-24 sm:px-3 lg:px-4">
+        <SidebarInset className="bg-transparent">
+          <div className="mx-auto w-full max-w-[96rem] px-2 pb-5 pt-5 sm:px-3 lg:px-4">
         <div ref={workspaceShellRef} className="flex flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-0">
 
         {/* Left-side workspace for connection setup, logs, and diagnostics */}
@@ -1979,6 +2227,13 @@ export default function Home() {
                 <button className={buttonClass} onClick={makePeer}>
                   Reconnect Peer
                 </button>
+                <button
+                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                  onClick={() => makePeer(true)}
+                  type="button"
+                >
+                  Generate New ID
+                </button>
               </div>
 
               <p className="text-xs text-slate-400">{modeHint}</p>
@@ -2000,6 +2255,14 @@ export default function Home() {
                 type="button"
               >
                 Share link
+              </button>
+
+              <button
+                className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+                onClick={saveTrustedConnection}
+                type="button"
+              >
+                Save as Trusted Connection
               </button>
             </section>
 
@@ -2435,14 +2698,15 @@ export default function Home() {
                           {item.complete ? "Transfer complete and ready." : `Receiving... ${Math.round(item.progress * 100)}%`}
                         </p>
                         <div className="mt-2 flex gap-2">
-                          <a
+                          <button
                             aria-disabled={!item.complete}
-                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
-                            href={item.url}
-                            download={item.name}
+                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!item.complete}
+                            onClick={() => downloadInboxFile(item)}
+                            type="button"
                           >
                             Download
-                          </a>
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -2453,14 +2717,83 @@ export default function Home() {
           </section>
 
           {activeTab === "home" && (
-            <section className="rounded-xl border border-slate-800 bg-[#0f172a]/70 p-3 text-sm text-slate-300">
-              <p className="font-semibold text-slate-100">Home</p>
-              <p className="mt-2">Use the top tabs to switch between file transfer and call panels.</p>
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#0f172a]/70 p-3 text-sm text-slate-300">
+              <p className="font-semibold text-slate-100">Home Workspace</p>
+              <p className="text-xs text-slate-400">Account and trusted reconnection live here.</p>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <input
+                  className={inputClass}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  placeholder="Account email"
+                  type="email"
+                  value={authEmail}
+                />
+                <input
+                  className={inputClass}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  placeholder="Account password"
+                  type="password"
+                  value={authPassword}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <button className={buttonClass} onClick={signUpAccount} type="button">
+                  <UserPlus className="mr-2 inline size-4" />
+                  Sign Up
+                </button>
+                <button className={buttonClass} onClick={signInAccount} type="button">
+                  <LogIn className="mr-2 inline size-4" />
+                  Sign In
+                </button>
+                <button
+                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                  onClick={signOutAccount}
+                  type="button"
+                >
+                  <LogOut className="mr-2 inline size-4" />
+                  Sign Out
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-300">
+                Account status: {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
+              </p>
+
+              <div className="rounded-xl border border-slate-700 bg-[#030712] p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Trusted Connections</p>
+                {trustedPeers.length === 0 ? (
+                  <p className="text-xs text-slate-400">No trusted peers saved yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {trustedPeers.map((peerId) => (
+                      <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 px-2 py-1">
+                        <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
+                        <button
+                          className="rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+                          onClick={() => {
+                            setTargetId(peerId);
+                            setActiveTab("transfer");
+                            window.setTimeout(() => connectToTarget(), 0);
+                          }}
+                          type="button"
+                        >
+                          <ShieldCheck className="mr-1 inline size-3" />
+                          Reconnect
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </section>
           )}
         </main>
       </div>
     </div>
-  </div>
+        </SidebarInset>
+      </div>
+    </SidebarProvider>
   );
 }
