@@ -7,6 +7,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
+import { Button } from "@/components/animate-ui/components/radix/button";
+import { Input } from "@/components/animate-ui/primitives/radix/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
 import {
   Sidebar,
   SidebarContent,
@@ -167,13 +170,7 @@ const formatBytes = (bytes: number): string => {
   return `${scaled.toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
 };
 
-const inputClass =
-  "w-full rounded-xl border border-slate-700 bg-[#030712]/80 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400";
-const buttonClass =
-  "rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400";
-// Deviding file into chunks for easier transfer
 const FILE_CHUNK_SIZE = 64 * 1024;
-// Pause sending when RTC buffering gets slow
 const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
 // Small wait used while the outbound buffer drains
 const BUFFER_CHECK_INTERVAL_MS = 10;
@@ -2148,36 +2145,49 @@ export default function Home() {
             <SidebarGroup>
               <SidebarGroupLabel className="text-slate-400">Account</SidebarGroupLabel>
               <div className="space-y-2 px-2 pb-2">
-                <input
-                  className={inputClass}
-                  onChange={(event) => setAuthEmail(event.target.value)}
-                  placeholder="Account email"
-                  type="email"
-                  value={authEmail}
-                />
-                <input
-                  className={inputClass}
-                  onChange={(event) => setAuthPassword(event.target.value)}
-                  placeholder="Account password"
-                  type="password"
-                  value={authPassword}
-                />
-                <button className={buttonClass} onClick={signUpAccount} type="button">
-                  <UserPlus className="mr-2 inline size-4" />
+                <div>
+                  <label htmlFor="email-input" className="text-xs font-medium text-slate-400 block mb-1">
+                    Email
+                  </label>
+                  <Input
+                    id="email-input"
+                    aria-label="Account email"
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    placeholder="Email address"
+                    type="email"
+                    value={authEmail}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="password-input" className="text-xs font-medium text-slate-400 block mb-1">
+                    Password
+                  </label>
+                  <Input
+                    id="password-input"
+                    aria-label="Account password"
+                    onChange={(event) => setAuthPassword(event.target.value)}
+                    placeholder="Password"
+                    type="password"
+                    value={authPassword}
+                  />
+                </div>
+                <Button onClick={signUpAccount} variant="default" size="md" className="w-full">
+                  <UserPlus className="mr-2 size-4" />
                   Sign Up
-                </button>
-                <button className={buttonClass} onClick={signInAccount} type="button">
-                  <LogIn className="mr-2 inline size-4" />
+                </Button>
+                <Button onClick={signInAccount} variant="default" size="md" className="w-full">
+                  <LogIn className="mr-2 size-4" />
                   Sign In
-                </button>
-                <button
-                  className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                </Button>
+                <Button
                   onClick={signOutAccount}
-                  type="button"
+                  variant="outline"
+                  size="md"
+                  className="w-full"
                 >
-                  <LogOut className="mr-2 inline size-4" />
+                  <LogOut className="mr-2 size-4" />
                   Sign Out
-                </button>
+                </Button>
                 <p className="text-xs text-slate-300">
                   {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
                 </p>
@@ -2193,18 +2203,19 @@ export default function Home() {
                   trustedPeers.map((peerId) => (
                     <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-[#030712] px-2 py-2">
                       <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
-                      <button
-                        className="rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => {
                           setTargetId(peerId);
                           setPanelTab("transfer");
                           window.setTimeout(() => connectToTarget(), 0);
                         }}
-                        type="button"
+                        aria-label={`Reconnect to peer ${peerId}`}
                       >
-                        <ShieldCheck className="mr-1 inline size-3" />
+                        <ShieldCheck className="mr-1 size-3" />
                         Reconnect
-                      </button>
+                      </Button>
                     </div>
                   ))
                 )}
@@ -2212,14 +2223,14 @@ export default function Home() {
             </SidebarGroup>
           </SidebarContent>
           <SidebarFooter className="p-2">
-            <div
-              className="mb-2 rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-xs text-slate-300"
+            <Button
+              variant="outline"
               onClick={() => setNotifications({ call: false, file: false, connection: false })}
-              role="button"
-              tabIndex={0}
+              className="w-full"
+              aria-label="Clear notifications"
             >
               {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
-            </div>
+            </Button>
           </SidebarFooter>
           <SidebarRail />
         </Sidebar>
@@ -2244,32 +2255,38 @@ export default function Home() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <select
-                  className={inputClass}
-                  value={mode}
-                  onChange={(e) => {
-                    const nextMode = e.target.value as "cloud" | "local";
-                    setMode(nextMode);
-                    applyModeDefaults(nextMode);
-                  }}
-                >
-                  <option value="cloud">Cloud</option>
-                  <option value="local">Local server</option>
-                </select>
-                <input
-                  className={inputClass}
+                <div>
+                  <label htmlFor="mode-select" className="text-xs font-medium text-slate-400 block mb-1">
+                    Mode
+                  </label>
+                  <Select value={mode} onValueChange={(nextMode) => {
+                    const m = nextMode as "cloud" | "local";
+                    setMode(m);
+                    applyModeDefaults(m);
+                  }}>
+                    <SelectTrigger id="mode-select" aria-label="Server mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cloud">Cloud</SelectItem>
+                      <SelectItem value="local">Local server</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Input
+                  aria-label="Host address"
                   placeholder="Host"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
                 />
-                <input
-                  className={inputClass}
+                <Input
+                  aria-label="Port number"
                   placeholder="Port"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
                 />
-                <input
-                  className={inputClass}
+                <Input
+                  aria-label="API path"
                   placeholder="Path"
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
@@ -2277,52 +2294,57 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <input
-                  className={inputClass}
+                <Input
+                  aria-label="Use secure connection"
                   placeholder="Secure: true/false"
                   value={secure}
                   onChange={(e) => setSecure(e.target.value)}
                 />
-                <button className={buttonClass} onClick={() => makePeer()}>
+                <Button variant="default" onClick={() => makePeer()}>
                   Reconnect Peer
-                </button>
-                <button
-                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+                </Button>
+                <Button
+                  variant="outline"
                   onClick={() => makePeer(true)}
-                  type="button"
+                  aria-label="Generate a new peer ID"
                 >
                   Generate New ID
-                </button>
+                </Button>
               </div>
 
               <p className="text-xs text-slate-400">{modeHint}</p>
 
-              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300">
+              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300 flex items-center justify-between gap-2">
                 <strong className="text-slate-100">Peer ID:</strong>
-                <button
-                  className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={copyPeerId}
+                  aria-label={`Copy peer ID ${myId} to clipboard`}
+                  className="font-mono text-xs"
                   title="Click to copy"
                 >
                   {myId}
-                </button>
+                </Button>
               </div>
 
-              <button
-                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+              <Button
+                variant="outline"
                 onClick={copyShareLink}
-                type="button"
+                className="w-full"
+                aria-label="Copy share link to clipboard"
               >
                 Share link
-              </button>
+              </Button>
 
-              <button
-                className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+              <Button
+                variant="secondary"
                 onClick={saveTrustedConnection}
-                type="button"
+                className="w-full"
+                aria-label="Save current peer as trusted connection"
               >
                 Save as Trusted Connection
-              </button>
+              </Button>
             </section>
 
             {/* Show current connection state, connect/disconnect, and live route stats */}
@@ -2330,8 +2352,8 @@ export default function Home() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                <input
-                  className={inputClass}
+                <Input
+                  aria-label="Target peer ID"
                   placeholder="Enter target peer ID"
                   value={targetId}
                   onChange={(e) => setTargetId(e.target.value)}
@@ -2346,12 +2368,8 @@ export default function Home() {
                     }
                   }}
                 />
-                <button
-                  className={
-                    connState === "Not connected"
-                      ? buttonClass
-                      : "rounded-xl border border-rose-500/50 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
-                  }
+                <Button
+                  variant={connState === "Not connected" ? "default" : "destructive"}
                   onClick={() => {
                     if (connState === "Not connected") {
                       connectToTarget();
@@ -2359,13 +2377,14 @@ export default function Home() {
                       disconnectFromTarget();
                     }
                   }}
+                  aria-label={connState === "Not connected" ? "Connect to peer" : "Disconnect from peer"}
                 >
                   {connState === "Not connected" ? "Connect" : "Disconnect"}
-                </button>
+                </Button>
               </div>
 
-              <input
-                className={inputClass}
+              <Input
+                aria-label="Display name (optional)"
                 placeholder="Name (optional)"
                 value={sender}
                 onChange={(e) => setSender(e.target.value)}
@@ -2376,15 +2395,17 @@ export default function Home() {
                 }}
               />
 
-              <button
-                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
+              <Button
+                variant="outline"
+                className="w-full"
                 onClick={() => {
                   setLogs([]);
                   pushLog("Cleared!");
                 }}
+                aria-label="Clear chat and log history"
               >
                 Clear chat and log
-              </button>
+              </Button>
 
               <p className="text-sm text-slate-300">
                 Connection: <strong className="text-slate-100">{connState}</strong>
@@ -2430,8 +2451,8 @@ export default function Home() {
           <section className="mt-4 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
             <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <input
-                className={inputClass}
+              <Input
+                aria-label="Message to send"
                 placeholder="Type message"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
@@ -2442,36 +2463,36 @@ export default function Home() {
                   }
                 }}
               />
-              <button
-                className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+              <Button
+                variant="secondary"
                 onClick={sendCurrentMessage}
+                aria-label="Send message"
               >
                 Send
-              </button>
+              </Button>
             </div>
             <div
               ref={logContainerRef}
               className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
+              role="log"
+              aria-live="polite"
+              aria-label="Chat and event log"
             >
               {logs.map((row) => {
                 let textClass = "text-slate-200";
 
-                // Error logs = red
                 if (row.error) {
                   textClass = "text-rose-400";
                 }
-                // Received messages = blue
                 else if (row.text.includes("Received:")) {
                   textClass = "text-[#0069d1]";
                 }
-                // Sent messages = dark cyan
                 else if(row.text.includes("Sent:")){
                   textClass = "text-[#0096ad]"
                 }
                 else if(row.text.includes("Incoming") || row.text.includes("Received")){
                   textClass = "text-[#00ad4e]"
                 }
-                // All remaining chat/log rows keep the default text color (it's white)
 
                 return (
                   <div key={row.id} className={textClass}>
@@ -2519,46 +2540,36 @@ export default function Home() {
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <button className={buttonClass} onClick={() => startCall("audio")}>
+              <Button variant="default" onClick={() => startCall("audio")} aria-label="Start audio call">
                 Audio Call
-              </button>
-              <button className={buttonClass} onClick={() => startCall("video")}>
+              </Button>
+              <Button variant="default" onClick={() => startCall("video")} aria-label="Start video call">
                 Video Call
-              </button>
+              </Button>
             </div>
 
             <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <button
-                className="rounded-xl border border-rose-500/50 bg-rose-500/15 px-3 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
+              <Button
+                variant="destructive"
                 onClick={endCall}
-                type="button"
+                aria-label="End current call"
               >
                 End Call
-              </button>
-              <button
-                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-                  micEnabled
-                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                }`}
+              </Button>
+              <Button
+                variant={micEnabled ? "secondary" : "destructive"}
                 onClick={toggleMic}
-                type="button"
-                title={micEnabled ? "Mute microphone" : "Unmute microphone"}
+                aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
               >
                 {micEnabled ? <Mic className="size-4" /> : <MicOff className="size-4" />}
-              </button>
-              <button
-                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-                  cameraEnabled
-                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                }`}
+              </Button>
+              <Button
+                variant={cameraEnabled ? "secondary" : "destructive"}
                 onClick={toggleCamera}
-                type="button"
-                title={cameraEnabled ? "Disable camera" : "Enable camera"}
+                aria-label={cameraEnabled ? "Turn off camera" : "Turn on camera"}
               >
                 {cameraEnabled ? <Video className="size-4" /> : <VideoOff className="size-4" />}
-              </button>
+              </Button>
             </div>
 
             {callType === "audio" && (
@@ -2574,6 +2585,7 @@ export default function Home() {
                         key={`wave-${index}`}
                         className="w-1.5 rounded-sm bg-cyan-400/85 transition-all duration-100"
                         style={{ height }}
+                        aria-hidden="true"
                       />
                     );
                   })}
@@ -2584,11 +2596,11 @@ export default function Home() {
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
                 <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Send</h3>
-                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" />
+                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" aria-label="Local video preview" />
               </div>
               <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
                 <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Receive</h3>
-                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" />
+                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" aria-label="Remote video stream" />
               </div>
             </div>
 
@@ -2617,38 +2629,39 @@ export default function Home() {
               />
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <button
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+                <Button
+                  variant="secondary"
                   onClick={() => fileInputRef.current?.click()}
-                  type="button"
+                  aria-label="Select files to upload"
                 >
                   <Plus className="size-4" />
                   Add File
-                </button>
-                <button
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+                </Button>
+                <Button
+                  variant="secondary"
                   onClick={() => folderInputRef.current?.click()}
-                  type="button"
+                  aria-label="Select folder to upload"
                 >
                   <Plus className="size-4" />
                   Add Folder
-                </button>
+                </Button>
               </div>
 
-
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  className={buttonClass}
+                <Button
+                  variant="default"
                   onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}
+                  aria-label="Send selected files"
                 >
                   Send Files
-                </button>
-                <button
-                  className={buttonClass}
+                </Button>
+                <Button
+                  variant="default"
                   onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}
+                  aria-label="Send selected folder"
                 >
                   Send Folder
-                </button>
+                </Button>
               </div>
 
 
@@ -2694,13 +2707,14 @@ export default function Home() {
                           <FileItem>{item.name}</FileItem>
                           <div className="flex items-center gap-2 text-slate-300">
                             <span>{formatBytes(item.size)}</span>
-                            <button
-                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => setSendingItems((prev) => prev.filter((entry) => entry.id !== item.id))}
-                              type="button"
+                              aria-label={`Remove ${item.name} from transfers`}
                             >
                               <X className="size-3.5" />
-                            </button>
+                            </Button>
                           </div>
                         </div>
                         <div className="mt-2 flex items-center gap-2">
@@ -2724,21 +2738,24 @@ export default function Home() {
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">Received Inbox</h3>
-                  <button
-                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
-                    onClick={downloadAll}
-                    type="button"
-                  >
-                    Download all
-                  </button>
-                  
-                  <button
-                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
-                    onClick={clearInbox}
-                    type="button"
-                  >
-                    Clear Inbox
-                  </button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={downloadAll}
+                      aria-label="Download all items from inbox"
+                    >
+                      Download all
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={clearInbox}
+                      aria-label="Clear all items from inbox"
+                    >
+                      Clear Inbox
+                    </Button>
+                  </div>
                 </div>
 
                 {inboxItems.length === 0 ? (
@@ -2751,14 +2768,14 @@ export default function Home() {
                           <FileItem>{item.name}</FileItem>
                           <div className="flex items-center gap-2 text-slate-300">
                             <span>{formatBytes(item.size)}</span>
-                            <button
-                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => removeInboxItem(item.id)}
-                              type="button"
-                              title="Remove row"
+                              aria-label={`Remove ${item.name} from inbox`}
                             >
                               <X className="size-3.5" />
-                            </button>
+                            </Button>
                           </div>
                         </div>
                         <div className="mt-2 flex items-center gap-2">
@@ -2772,15 +2789,14 @@ export default function Home() {
                           {item.complete ? "Transfer complete and ready." : `Receiving... ${Math.round(item.progress * 100)}%`}
                         </p>
                         <div className="mt-2 flex gap-2">
-                          <button
-                            aria-disabled={!item.complete}
-                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                          <Button
+                            variant="secondary"
                             disabled={!item.complete}
                             onClick={() => downloadInboxFile(item)}
-                            type="button"
+                            aria-label={`Download ${item.name}`}
                           >
                             Download
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     ))}
