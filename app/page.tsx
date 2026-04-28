@@ -2117,8 +2117,7 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <SidebarProvider defaultOpen className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
-        <SpeedInsights />
+    <SidebarProvider defaultOpen className="bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
         <Sidebar
           className="border-r border-slate-800 bg-[#020617]"
           collapsible="icon"
@@ -2235,6 +2234,7 @@ export default function Home() {
         </Sidebar>
 
         <SidebarInset className="bg-transparent">
+          <SpeedInsights />
           <div className="mx-auto w-full max-w-[96rem] px-2 pb-5 pt-5 sm:px-3 lg:px-4">
         <div ref={workspaceShellRef} className="flex flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-0">
 
