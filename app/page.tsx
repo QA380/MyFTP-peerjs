@@ -2135,7 +2135,6 @@ export default function Home() {
             </div>
 
             <SidebarGroup>
-              <SidebarGroupLabel className="text-slate-400">Workspace 2</SidebarGroupLabel>
               <SidebarMenu>
                 <SidebarMenuItem>
                   <SidebarMenuButton className="text-slate-200" isActive>
