@@ -2117,8 +2117,7 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <SidebarProvider defaultOpen>
-      <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
+    <SidebarProvider defaultOpen className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
         <SpeedInsights />
         <Sidebar
           className="border-r border-slate-800 bg-[#020617]"
@@ -2811,7 +2810,6 @@ export default function Home() {
       </div>
     </div>
         </SidebarInset>
-      </div>
     </SidebarProvider>
   );
 }
