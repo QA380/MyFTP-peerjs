@@ -11,6 +11,9 @@ pnpm dev
 bun dev
 ```
 
+<img width="1957" height="1296" alt="image" src="https://github.com/user-attachments/assets/8e654836-30dd-45f7-9919-f35f205d86c9" />
+
+
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.<br>
 Or visit [`my-ftp-peerjs.vercel`](https://my-ftp-peerjs.vercel.app/) to see the demo.<br>
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
