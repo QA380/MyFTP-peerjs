@@ -5,13 +5,11 @@ import Peer, { DataConnection, MediaConnection } from "peerjs";
 import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
-import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
 import { Tabs, TabsContent, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import { Button } from "@/components/animate-ui/components/radix/button";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
 import { supabase } from "@/lib/supabase";
-import { X, Download } from "lucide-react";
 
 
 type LogRow = {
@@ -289,6 +287,7 @@ const writeBlobToDirectory = async (
   await writable.close();
 };
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const sortTreeNodes = (nodes: TreeNode[]): TreeNode[] =>
   nodes
     .sort((left, right) => {
@@ -303,127 +302,11 @@ const sortTreeNodes = (nodes: TreeNode[]): TreeNode[] =>
       children: sortTreeNodes(node.children),
     }));
 
-const buildTreeFromEntries = (entries: TreeEntry[]): TreeNode[] => {
-  const roots: TreeNode[] = [];
 
-  for (const entry of entries) {
-    const parts = normalizePathParts(entry.path);
-    if (parts.length === 0) {
-      continue;
-    }
-
-    let children = roots;
-    let currentPath = "";
-
-    parts.forEach((part, index) => {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const isLeaf = index === parts.length - 1;
-      let node = children.find((child) => child.name === part);
-
-      if (!node) {
-        node = {
-          path: currentPath,
-          name: part,
-          size: isLeaf ? entry.size : 0,
-          isFolder: !isLeaf,
-          children: [],
-        };
-        children.push(node);
-      }
-
-      if (isLeaf) {
-        node.size = entry.size;
-        node.isFolder = false;
-      } else {
-        node.isFolder = true;
-        children = node.children;
-      }
-    });
-  }
-
-  return sortTreeNodes(roots);
-};
-
-function TreeNodeRow({
-  node,
-  onDelete,
-  onDownloadFolder,
-}: {
-  node: TreeNode;
-  onDelete?: (path: string) => void;
-  onDownloadFolder?: (path: string) => void;
-}) {
-  if (node.isFolder) {
-    return (
-      <FolderItem value={node.path}>
-        <div className="flex w-full items-start justify-between gap-2 rounded-lg border border-slate-800/70 bg-[#030712]/80 px-3 py-2">
-          <FolderTrigger className="min-w-0 flex-1 whitespace-normal break-words !text-slate-300 hover:!text-slate-300 focus:!text-slate-300">
-            {node.name}
-          </FolderTrigger>
-          <div className="flex shrink-0 items-center gap-1">
-            {onDownloadFolder && (
-              <button
-                className="rounded p-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
-                onClick={() => onDownloadFolder(node.path)}
-                title="Download folder"
-                type="button"
-              >
-                <Download className="size-3" />
-              </button>
-            )}
-            {onDelete && (
-              <button
-                className="rounded p-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
-                onClick={() => onDelete(node.path)}
-                title="Delete"
-                type="button"
-              >
-                <X className="size-3" />
-              </button>
-            )}
-          </div>
-        </div>
-        <FolderContent>
-          <SubFiles
-            className="ml-3 border-l border-slate-800 pl-3"
-            defaultOpen={node.children.filter((child) => child.isFolder).map((child) => child.path)}
-          >
-            {node.children.map((child) => (
-              <TreeNodeRow
-                key={child.path}
-                node={child}
-                onDelete={onDelete}
-                onDownloadFolder={onDownloadFolder}
-              />
-            ))}
-          </SubFiles>
-        </FolderContent>
-      </FolderItem>
-    );
-  }
-
-  return (
-    <div className="flex w-full items-start justify-between gap-3 rounded-lg border border-slate-800/70 bg-[#030712]/80 px-3 py-2">
-      <FileItem className="min-w-0 flex-1 whitespace-normal break-words">{node.name}</FileItem>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="text-[11px] text-slate-400">{formatBytes(node.size)}</span>
-        {onDelete && (
-          <button
-            className="rounded p-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
-            onClick={() => onDelete(node.path)}
-            title="Delete"
-            type="button"
-          >
-            <X className="size-3" />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
 
 export default function Home() {
   const [panelTab, setPanelTab] = useState<"transfer" | "call" | "chat" | "diag" | "settings">("transfer");
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [notifications, setNotifications] = useState({
     call: false,
     file: false,
@@ -457,6 +340,7 @@ export default function Home() {
   const [uploadedFolderFiles, setUploadedFolderFiles] = useState<TreeEntry[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [workspaceSplit, setWorkspaceSplit] = useState(64);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -1122,24 +1006,6 @@ export default function Home() {
   }, [pushLog, sendControlMessage]);
 
   // Remove single inbox item and revoke its download URL
-  const removeInboxItem = useCallback((id: string) => {
-    cancelledIncomingTransfersRef.current.add(id);
-    if (activeConnRef.current?.open) {
-      sendControlMessage(activeConnRef.current, {
-        kind: "transfer-cancel",
-        transferId: id,
-      });
-    }
-
-    setInboxItems((prev) => {
-      const target = prev.find((item) => item.id === id);
-      if (target && target.url) {
-        URL.revokeObjectURL(target.url);
-      }
-      activeInboxTransfersRef.current.delete(id);
-      return prev.filter((item) => item.id !== id);
-    });
-  }, [sendControlMessage]);
 
   // Wire the live data-channel listeners for chat, transfer, and close events
   const wireConnection = useCallback(
