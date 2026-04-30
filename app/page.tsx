@@ -6,26 +6,12 @@ import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
+import { Tabs, TabsContent, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import { Button } from "@/components/animate-ui/components/radix/button";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupLabel,
-  SidebarInset,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarRail,
-  SidebarTrigger,
-} from "@/components/animate-ui/components/radix/sidebar";
 import { supabase } from "@/lib/supabase";
-import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Download, UserPlus, LogIn, LogOut, ShieldCheck } from "lucide-react";
+import { X, Download } from "lucide-react";
 
 
 type LogRow = {
@@ -184,21 +170,6 @@ const formatLatency = (rttMs: number | null): string => {
 };
 
 // Color-code diagnostics based on route, latency, and buffer pressure
-const diagnosticsColor = (diagnostics: ConnectionDiagnostics) => {
-  const highBuffer = diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK;
-  const highRtt = diagnostics.rttMs !== null && diagnostics.rttMs > 220;
-
-  if (diagnostics.route === "relay" || highBuffer || highRtt) {
-    return "text-rose-300";
-  }
-
-  if (diagnostics.route === "unknown" || diagnostics.dataChannelState !== "open") {
-    return "text-amber-300";
-  }
-
-  return "text-emerald-300";
-};
-
 // Message sent to log
 type WorkerInboundMessage = {
   type: "prepare-file";
@@ -451,43 +422,8 @@ function TreeNodeRow({
   );
 }
 
-function TreePanel({
-  title,
-  emptyLabel,
-  entries,
-  onDelete,
-  onDownloadFolder,
-}: {
-  title: string;
-  emptyLabel: string;
-  entries: TreeEntry[];
-  onDelete?: (path: string) => void;
-  onDownloadFolder?: (path: string) => void;
-}) {
-  const tree = useMemo(() => buildTreeFromEntries(entries), [entries]);
-
-  return (
-    <section className="rounded-xl border border-slate-800 bg-[#030712] p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">{title}</h3>
-        <span className="text-[11px] text-slate-500">{entries.length} item(s)</span>
-      </div>
-
-      {tree.length === 0 ? (
-        <p className="text-xs text-slate-400">{emptyLabel}</p>
-      ) : (
-        <Files className="rounded-lg border border-slate-800 bg-[#0a1324] p-2" defaultOpen={tree.filter((node) => node.isFolder).map((node) => node.path)}>
-          {tree.map((node) => (
-            <TreeNodeRow key={node.path} node={node} onDelete={onDelete} onDownloadFolder={onDownloadFolder} />
-          ))}
-        </Files>
-      )}
-    </section>
-  );
-}
-
 export default function Home() {
-  const [panelTab, setPanelTab] = useState<"transfer" | "call">("transfer");
+  const [panelTab, setPanelTab] = useState<"transfer" | "call" | "chat" | "diag" | "settings">("transfer");
   const [notifications, setNotifications] = useState({
     call: false,
     file: false,
@@ -2117,699 +2053,371 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <SidebarProvider defaultOpen className="bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
-        <Sidebar
-          className="border-r border-slate-800 bg-[#020617]"
-          collapsible="icon"
-          containerClassName="bg-[#020617]"
-          variant="sidebar"
-        >
-          <SidebarContent>
-            <div className="flex items-center justify-end px-2 pt-2">
-              <SidebarTrigger className="text-slate-300 hover:bg-slate-800 hover:text-slate-100" />
+    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100 flex flex-col">
+      <SpeedInsights />
+      
+      {/* Top bar */}
+      <div className="border-b border-slate-800 bg-[#020617]/80 backdrop-blur px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold tracking-tight">My<span className="text-cyan-500">FTP</span></h1>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900/50 text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span className="font-mono font-semibold">{myId}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button variant="outline" size="sm" onClick={copyPeerId} aria-label="Copy peer ID">Copy ID</Button>
+          <Button variant="outline" size="sm" onClick={copyShareLink} aria-label="Copy share link">Share</Button>
+          <Button variant="outline" size="sm" onClick={() => makePeer(true)} aria-label="Generate new ID">New ID</Button>
+          <Button variant="destructive" size="sm" onClick={() => makePeer()} aria-label="Reconnect">Reconnect</Button>
+        </div>
+      </div>
+
+      {/* Three-column main layout */}
+      <div className="flex-1 overflow-hidden grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-0 bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827]">
+        
+        {/* Left column: Peer connection & account */}
+        <div className="border-r border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1">
+          <div className="p-4 space-y-6">
+            {/* Connect to peer section */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Connect</h2>
+              <Input
+                aria-label="Target peer ID"
+                placeholder="Enter peer ID…"
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (connState === "Not connected") connectToTarget();
+                    else disconnectFromTarget();
+                  }
+                }}
+              />
+              <Input
+                aria-label="Display name"
+                placeholder="Name (optional)"
+                value={sender}
+                onChange={(e) => setSender(e.target.value)}
+              />
+              <Button
+                variant="default"
+                className="w-full"
+                onClick={() => {
+                  if (connState === "Not connected") connectToTarget();
+                  else disconnectFromTarget();
+                }}
+                aria-label={connState === "Not connected" ? "Connect" : "Disconnect"}
+              >
+                {connState === "Not connected" ? "Connect" : "Disconnect"}
+              </Button>
+              <div className="text-xs text-slate-400">
+                Status: <span className="font-mono font-semibold text-slate-100">{connState}</span>
+              </div>
             </div>
 
-            <SidebarGroup>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton className="text-slate-200" isActive>
-                    <House className="size-4" />
-                    <span>Home</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroup>
+            <div className="h-px bg-slate-700"></div>
 
-            <SidebarGroup>
-              <SidebarGroupLabel className="text-slate-400">Account</SidebarGroupLabel>
-              <div className="space-y-2 px-2 pb-2">
-                <div>
-                  <label htmlFor="email-input" className="text-xs font-medium text-slate-400 block mb-1">
-                    Email
-                  </label>
-                  <Input
-                    id="email-input"
-                    aria-label="Account email"
-                    onChange={(event) => setAuthEmail(event.target.value)}
-                    placeholder="Email address"
-                    type="email"
-                    value={authEmail}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="password-input" className="text-xs font-medium text-slate-400 block mb-1">
-                    Password
-                  </label>
-                  <Input
-                    id="password-input"
-                    aria-label="Account password"
-                    onChange={(event) => setAuthPassword(event.target.value)}
-                    placeholder="Password"
-                    type="password"
-                    value={authPassword}
-                  />
-                </div>
-                <Button onClick={signUpAccount} variant="default" size="md" className="w-full">
-                  <UserPlus className="mr-2 size-4" />
-                  Sign Up
-                </Button>
-                <Button onClick={signInAccount} variant="default" size="md" className="w-full">
-                  <LogIn className="mr-2 size-4" />
-                  Sign In
-                </Button>
-                <Button
-                  onClick={signOutAccount}
-                  variant="outline"
-                  size="md"
-                  className="w-full"
-                >
-                  <LogOut className="mr-2 size-4" />
-                  Sign Out
-                </Button>
-                <p className="text-xs text-slate-300">
-                  {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
-                </p>
-              </div>
-            </SidebarGroup>
-
-            <SidebarGroup>
-              <SidebarGroupLabel className="text-slate-400">Trusted Connections</SidebarGroupLabel>
-              <div className="space-y-2 px-2 pb-2">
-                {trustedPeers.length === 0 ? (
-                  <p className="rounded-lg border border-slate-700 bg-[#030712] px-2 py-2 text-xs text-slate-400">No trusted peers saved yet.</p>
-                ) : (
-                  trustedPeers.map((peerId) => (
-                    <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-[#030712] px-2 py-2">
-                      <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
+            {/* Trusted peers section */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Trusted Peers</h2>
+              {trustedPeers.length === 0 ? (
+                <p className="text-xs text-slate-500 italic">No trusted peers saved yet.</p>
+              ) : (
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {trustedPeers.map((peerId) => (
+                    <div key={peerId} className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-700 bg-slate-800/30 hover:bg-slate-800/60 transition text-xs">
+                      <span className="font-mono text-slate-300 truncate flex-1">{peerId}</span>
                       <Button
                         variant="secondary"
                         size="sm"
                         onClick={() => {
                           setTargetId(peerId);
-                          setPanelTab("transfer");
                           window.setTimeout(() => connectToTarget(), 0);
                         }}
-                        aria-label={`Reconnect to peer ${peerId}`}
+                        aria-label={`Connect to ${peerId}`}
                       >
-                        <ShieldCheck className="mr-1 size-3" />
-                        Reconnect
+                        Go
                       </Button>
                     </div>
-                  ))
-                )}
-              </div>
-            </SidebarGroup>
-          </SidebarContent>
-          <SidebarFooter className="p-2">
-            <Button
-              variant="outline"
-              onClick={() => setNotifications({ call: false, file: false, connection: false })}
-              className="w-full"
-              aria-label="Clear notifications"
-            >
-              {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
-            </Button>
-          </SidebarFooter>
-          <SidebarRail />
-        </Sidebar>
-
-        <SidebarInset className="bg-transparent">
-          <SpeedInsights />
-          <div className="mx-auto w-full max-w-[96rem] px-2 pb-5 pt-5 sm:px-3 lg:px-4">
-        <div ref={workspaceShellRef} className="flex flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-0">
-
-        {/* Left-side workspace for connection setup, logs, and diagnostics */}
-        <main
-          className="rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3 lg:rounded-r-none"
-          style={{ width: "100%", flexBasis: `${workspaceSplit}%` }}
-        >
-          <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
-          <p className="mt-2 text-sm text-slate-300">
-            Connect | transfer files/folders | calls
-          </p>
-
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
-            {/* Configure peer server and choose cloud or local mode */}
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <div>
-                  <label htmlFor="mode-select" className="text-xs font-medium text-slate-400 block mb-1">
-                    Mode
-                  </label>
-                  <Select value={mode} onValueChange={(nextMode) => {
-                    const m = nextMode as "cloud" | "local";
-                    setMode(m);
-                    applyModeDefaults(m);
-                  }}>
-                    <SelectTrigger id="mode-select" aria-label="Server mode">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="cloud">Cloud</SelectItem>
-                      <SelectItem value="local">Local server</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  ))}
                 </div>
-                <Input
-                  aria-label="Host address"
-                  placeholder="Host"
-                  value={host}
-                  onChange={(e) => setHost(e.target.value)}
-                />
-                <Input
-                  aria-label="Port number"
-                  placeholder="Port"
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                />
-                <Input
-                  aria-label="API path"
-                  placeholder="Path"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <Input
-                  aria-label="Use secure connection"
-                  placeholder="Secure: true/false"
-                  value={secure}
-                  onChange={(e) => setSecure(e.target.value)}
-                />
-                <Button variant="default" onClick={() => makePeer()}>
-                  Reconnect Peer
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => makePeer(true)}
-                  aria-label="Generate a new peer ID"
-                >
-                  Generate New ID
-                </Button>
-              </div>
-
-              <p className="text-xs text-slate-400">{modeHint}</p>
-
-              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300 flex items-center justify-between gap-2">
-                <strong className="text-slate-100">Peer ID:</strong>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={copyPeerId}
-                  aria-label={`Copy peer ID ${myId} to clipboard`}
-                  className="font-mono text-xs"
-                  title="Click to copy"
-                >
-                  {myId}
-                </Button>
-              </div>
-
-              <Button
-                variant="outline"
-                onClick={copyShareLink}
-                className="w-full"
-                aria-label="Copy share link to clipboard"
-              >
-                Share link
-              </Button>
-
+              )}
               <Button
                 variant="secondary"
+                size="sm"
+                className="w-full"
                 onClick={saveTrustedConnection}
-                className="w-full"
-                aria-label="Save current peer as trusted connection"
+                aria-label="Save as trusted"
               >
-                Save as Trusted Connection
+                Save Current
               </Button>
-            </section>
+            </div>
 
-            {/* Show current connection state, connect/disconnect, and live route stats */}
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#101a2e]/70 p-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
+            <div className="h-px bg-slate-700"></div>
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                <Input
-                  aria-label="Target peer ID"
-                  placeholder="Enter target peer ID"
-                  value={targetId}
-                  onChange={(e) => setTargetId(e.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      if (connState === "Not connected") {
-                        connectToTarget();
-                      } else {
-                        disconnectFromTarget();
-                      }
-                    }
-                  }}
-                />
-                <Button
-                  variant={connState === "Not connected" ? "default" : "destructive"}
-                  onClick={() => {
-                    if (connState === "Not connected") {
-                      connectToTarget();
-                    } else {
-                      disconnectFromTarget();
-                    }
-                  }}
-                  aria-label={connState === "Not connected" ? "Connect to peer" : "Disconnect from peer"}
-                >
-                  {connState === "Not connected" ? "Connect" : "Disconnect"}
-                </Button>
-              </div>
-
+            {/* Account section */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Account</h2>
               <Input
-                aria-label="Display name (optional)"
-                placeholder="Name (optional)"
-                value={sender}
-                onChange={(e) => setSender(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                  }
-                }}
+                id="email-input"
+                aria-label="Email"
+                placeholder="Email"
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
               />
-
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => {
-                  setLogs([]);
-                  pushLog("Cleared!");
-                }}
-                aria-label="Clear chat and log history"
-              >
-                Clear chat and log
-              </Button>
-
-              <p className="text-sm text-slate-300">
-                Connection: <strong className="text-slate-100">{connState}</strong>
-              </p>
-
-              <div className="rounded-lg border border-slate-700 bg-[#030712] px-3 py-2 text-xs text-slate-300">
-                <p className="font-mono uppercase tracking-wide text-slate-300">Connection Diagnostics</p>
-                <p 
-                  className={`font-mono ${
-                    diagnostics.dataChannelState === "open" 
-                    ? "text-emerald-300" 
-                    : "text-amber-300"}`}
-                >
-                  Data channel......: {diagnostics.dataChannelState}
-                </p>
-                <p 
-                  className={`font-mono ${
-                    diagnostics.bufferedAmount 
-                      > BUFFER_HIGH_WATERMARK 
-                      ? "text-rose-300" 
-                      : "text-emerald-300"}`}
-                >
-                  Buffered outbound : {formatBytes(diagnostics.bufferedAmount)}
-                </p>
-                <p className={`font-mono ${
-                    diagnostics.rttMs === null
-                      ? "text-amber-300"
-                      : diagnostics.rttMs > 220
-                        ? "text-rose-300"
-                        : "text-emerald-300"
-                  }`}
-                >
-                  Ping..............: {formatLatency(diagnostics.rttMs)}
-                </p>
-                <p className={`font-mono ${diagnosticsColor(diagnostics)}`}>
-                  Route.............: {diagnostics.route === "unknown" ? "Unknown" : diagnostics.route === "relay" ? "Relay" : "Direct"}
-                </p>
+              <Input
+                id="password-input"
+                aria-label="Password"
+                placeholder="Password"
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="default" size="sm" onClick={signUpAccount}>Sign Up</Button>
+                <Button variant="default" size="sm" onClick={signInAccount}>Sign In</Button>
               </div>
-            </section>
+              <Button variant="outline" size="sm" className="w-full" onClick={signOutAccount}>Sign Out</Button>
+              <p className="text-xs text-slate-400">{authUserId ? `Signed in: ${authUserId.slice(0, 8)}...` : "Not signed in"}</p>
+            </div>
           </div>
-
-          {/* Event log for sent messages, received messages, and transfer updates */}
-          <section className="mt-4 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <Input
-                aria-label="Message to send"
-                placeholder="Type message"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    sendCurrentMessage();
-                  }
-                }}
-              />
-              <Button
-                variant="secondary"
-                onClick={sendCurrentMessage}
-                aria-label="Send message"
-              >
-                Send
-              </Button>
-            </div>
-            <div
-              ref={logContainerRef}
-              className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
-              role="log"
-              aria-live="polite"
-              aria-label="Chat and event log"
-            >
-              {logs.map((row) => {
-                let textClass = "text-slate-200";
-
-                if (row.error) {
-                  textClass = "text-rose-400";
-                }
-                else if (row.text.includes("Received:")) {
-                  textClass = "text-[#0069d1]";
-                }
-                else if(row.text.includes("Sent:")){
-                  textClass = "text-[#0096ad]"
-                }
-                else if(row.text.includes("Incoming") || row.text.includes("Received")){
-                  textClass = "text-[#00ad4e]"
-                }
-
-                return (
-                  <div key={row.id} className={textClass}>
-                    {row.text}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        </main>
-
-        <div
-          aria-label="Resize workspaces"
-          className="hidden w-2 cursor-col-resize items-stretch justify-center lg:flex"
-          onMouseDown={() => {
-            isResizingWorkspaceRef.current = true;
-          }}
-          role="separator"
-        >
-          <div className="w-px rounded-full bg-slate-700 transition hover:bg-cyan-400" />
         </div>
 
-        {/* Right-side workspace for calls, media previews, and file transfer tools */}
-        <main
-          className="space-y-4 rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3 lg:rounded-l-none"
-          style={{ width: "100%", flexBasis: `${100 - workspaceSplit}%` }}
-        >
-          <h1 className="text-2xl font-bold tracking-tight">Extra Functions</h1>
-
-          <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call") }>
-            <TabsList>
-              <TabsTrigger value="transfer">
-                <Folder className="mr-2 size-4" />
-                Transfer
-              </TabsTrigger>
-              <TabsTrigger value="call">
-                <Phone className="mr-2 size-4" />
-                Call
-              </TabsTrigger>
-            </TabsList>
-
-          {/* Call controls plus local and remote video panes */}
-          <TabsContent value="call">
-          <section className="rounded-xl border border-slate-800 bg-[#0e182b]/75 p-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
-
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <Button variant="default" onClick={() => startCall("audio")} aria-label="Start audio call">
-                Audio Call
-              </Button>
-              <Button variant="default" onClick={() => startCall("video")} aria-label="Start video call">
-                Video Call
-              </Button>
+        {/* Center column: Tabbed interface */}
+        <div className="border-r border-slate-800 bg-[#0a0f1f] overflow-hidden flex flex-col sm:col-span-2 lg:col-span-2">
+          <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call" | "chat" | "diag" | "settings")} className="flex flex-col h-full">
+            <div className="border-b border-slate-700 px-4 flex gap-1 bg-slate-900/30 overflow-x-auto">
+              <TabsTrigger value="transfer" className="text-xs whitespace-nowrap">Files</TabsTrigger>
+              <TabsTrigger value="chat" className="text-xs whitespace-nowrap">Chat</TabsTrigger>
+              <TabsTrigger value="call" className="text-xs whitespace-nowrap">Calls</TabsTrigger>
+              <TabsTrigger value="diag" className="text-xs whitespace-nowrap">Diagnostics</TabsTrigger>
+              <TabsTrigger value="settings" className="text-xs whitespace-nowrap">Settings</TabsTrigger>
             </div>
 
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <Button
-                variant="destructive"
-                onClick={endCall}
-                aria-label="End current call"
-              >
-                End Call
-              </Button>
-              <Button
-                variant={micEnabled ? "secondary" : "destructive"}
-                onClick={toggleMic}
-                aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
-              >
-                {micEnabled ? <Mic className="size-4" /> : <MicOff className="size-4" />}
-              </Button>
-              <Button
-                variant={cameraEnabled ? "secondary" : "destructive"}
-                onClick={toggleCamera}
-                aria-label={cameraEnabled ? "Turn off camera" : "Turn on camera"}
-              >
-                {cameraEnabled ? <Video className="size-4" /> : <VideoOff className="size-4" />}
-              </Button>
-            </div>
-
-            {callType === "audio" && (
-              <div className="mt-3 rounded-lg border border-slate-700 bg-[#030712] p-3">
-                <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Voice Activity</p>
-                <div className="flex h-14 items-end gap-1">
-                  {Array.from({ length: 18 }).map((_, index) => {
-                    const wave = Math.min(1, audioLevel + ((index % 3) + 1) * 0.08);
-                    const height = 6 + Math.round(wave * 42);
-
-                    return (
-                      <span
-                        key={`wave-${index}`}
-                        className="w-1.5 rounded-sm bg-cyan-400/85 transition-all duration-100"
-                        style={{ height }}
-                        aria-hidden="true"
-                      />
-                    );
-                  })}
+            {/* Transfer/Files tab */}
+            <TabsContent value="transfer" className="flex-1 overflow-y-auto p-4">
+              <div className="space-y-4">
+                {/* Quick actions */}
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} aria-label="Add files">Add Files</Button>
+                  <Button variant="secondary" size="sm" onClick={() => folderInputRef.current?.click()} aria-label="Add folder">Add Folder</Button>
                 </div>
-              </div>
-            )}
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="default" size="sm" onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}>Send Files</Button>
+                  <Button variant="default" size="sm" onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}>Send Folder</Button>
+                </div>
 
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
-                <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Send</h3>
-                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" aria-label="Local video preview" />
-              </div>
-              <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
-                <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Receive</h3>
-                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" aria-label="Remote video stream" />
-              </div>
-            </div>
-
-            <p className="mt-3 text-xs text-slate-400">Secured Network</p>
-          </section>
-          </TabsContent>
-
-          {/* File and folder upload controls plus sender/receiver progress panels */}
-          <TabsContent value="transfer">
-          <section className="rounded-xl border border-slate-800 bg-[#121d31]/75 p-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">File Transfer</h2>
-            <div className="mt-3 space-y-2">
-              <input
-                ref={fileInputRef}
-                className="hidden"
-                type="file"
-                multiple
-                onChange={(event) => onFilesSelected(event.target.files, "file")}
-              />
-              <input
-                ref={folderInputRef}
-                className="hidden"
-                type="file"
-                multiple
-                onChange={(event) => onFilesSelected(event.target.files, "folder")}
-              />
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => fileInputRef.current?.click()}
-                  aria-label="Select files to upload"
-                >
-                  <Plus className="size-4" />
-                  Add File
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => folderInputRef.current?.click()}
-                  aria-label="Select folder to upload"
-                >
-                  <Plus className="size-4" />
-                  Add Folder
-                </Button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="default"
-                  onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}
-                  aria-label="Send selected files"
-                >
-                  Send Files
-                </Button>
-                <Button
-                  variant="default"
-                  onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}
-                  aria-label="Send selected folder"
-                >
-                  Send Folder
-                </Button>
-              </div>
-
-
-              <p className="text-xs text-slate-500">
-                DO NOT Close this tab, if you want to continue transfer.
-              </p>
-
-              <div className="grid gap-3">
-                <TreePanel
-                  title="Uploaded File List"
-                  emptyLabel="No uploaded files or folders "
-                  entries={[...uploadedFiles, ...uploadedFolderFiles]}
-                  onDelete={(path) => {
-                    setUploadedFiles((prev) => prev.filter((f) => !(f.path === path || f.path.startsWith(`${path}/`))));
-                    setUploadedFolderFiles((prev) => prev.filter((f) => !(f.path === path || f.path.startsWith(`${path}/`))));
-                  }}
-                />
-                <TreePanel
-                  title="Received File List"
-                  emptyLabel="No completed received files or folders "
-                  entries={inboxItems
-                    .filter((item) => item.complete)
-                    .map((item) => ({ path: item.name, size: item.size }))}
-                  onDelete={(path) => {
-                    setInboxItems((prev) => prev.filter((item) => !(item.name === path || item.name.startsWith(`${path}/`))));
-                  }}
-                  onDownloadFolder={(path) => {
-                    void downloadInboxFolder(path);
-                  }}
-                />
-              </div>
-
-              <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Sending Transfers</h3>
-
+                <h3 className="text-sm font-semibold pt-4">Active Transfers</h3>
                 {sendingItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No active transfers</p>
+                  <p className="text-xs text-slate-500">No active transfers</p>
                 ) : (
-                  <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
+                  <div className="space-y-2">
                     {sendingItems.map((item) => (
-                      <div key={item.id} className="rounded-md p-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <FileItem>{item.name}</FileItem>
-                          <div className="flex items-center gap-2 text-slate-300">
-                            <span>{formatBytes(item.size)}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setSendingItems((prev) => prev.filter((entry) => entry.id !== item.id))}
-                              aria-label={`Remove ${item.name} from transfers`}
-                            >
-                              <X className="size-3.5" />
-                            </Button>
-                          </div>
+                      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span className="text-xs font-medium truncate flex-1">{item.name}</span>
+                          <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
                         </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <Progress
-                            value={Math.min(Math.max(item.progress * 100, 0), 100)}
-                            className="h-2 bg-slate-700 [&_[data-slot=progress-indicator]]:bg-cyan-400"
-                          />
-                        </div>
-                        <p className="mt-1 text-slate-400">
-                          {formatBytes(Math.max(item.rate, 0))}/s
-                        </p>
-                        <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
-                          {item.complete ? "Transfer complete." : `Sending... ${Math.round(item.progress * 100)}%`}
-                        </p>
+                        <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
+                        <div className="text-xs text-slate-400 mt-1">{item.complete ? "Done" : `${Math.round(item.progress * 100)}%`}</div>
                       </div>
                     ))}
-                  </Files>
+                  </div>
                 )}
+
+                <h3 className="text-sm font-semibold pt-4">Received Files</h3>
+                {inboxItems.length === 0 ? (
+                  <p className="text-xs text-slate-500">No received files</p>
+                ) : (
+                  <div className="space-y-2">
+                    {inboxItems.map((item) => (
+                      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span className="text-xs font-medium truncate flex-1">{item.name}</span>
+                          <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
+                        </div>
+                        <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
+                        <div className="text-xs text-slate-400 mt-1">{item.complete ? "Ready" : `${Math.round(item.progress * 100)}%`}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-xs text-slate-500 pt-2">DO NOT close this tab during transfers</p>
+              </div>
+            </TabsContent>
+
+            {/* Chat tab */}
+            <TabsContent value="chat" className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs font-mono" ref={logContainerRef} role="log" aria-live="polite">
+                {logs.slice(-50).map((row) => (
+                  <div key={row.id} className={row.error ? "text-rose-400" : row.text.includes("Sent:") ? "text-cyan-400" : "text-slate-300"}>
+                    {row.text}
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-slate-700 p-3 bg-slate-900/30 flex gap-2">
+                <Input
+                  aria-label="Message"
+                  placeholder="Type message…"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") sendCurrentMessage(); }}
+                  className="flex-1 text-xs"
+                />
+                <Button variant="secondary" size="sm" onClick={sendCurrentMessage}>Send</Button>
+              </div>
+            </TabsContent>
+
+            {/* Calls tab */}
+            <TabsContent value="call" className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="default" onClick={() => startCall("audio")} aria-label="Audio call">Audio</Button>
+                <Button variant="default" onClick={() => startCall("video")} aria-label="Video call">Video</Button>
+              </div>
+              <Button variant="destructive" className="w-full" onClick={endCall}>End Call</Button>
+              <div className="flex gap-2">
+                <Button variant={micEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleMic}>{micEnabled ? "🔊" : "🔇"} Mic</Button>
+                <Button variant={cameraEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleCamera}>{cameraEnabled ? "📹" : "❌"} Cam</Button>
               </div>
 
-              <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">Received Inbox</h3>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={downloadAll}
-                      aria-label="Download all items from inbox"
-                    >
-                      Download all
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={clearInbox}
-                      aria-label="Clear all items from inbox"
-                    >
-                      Clear Inbox
-                    </Button>
+              {callType === "audio" && (
+                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-3">
+                  <p className="text-xs text-slate-400 mb-2">Voice Activity</p>
+                  <div className="flex h-12 items-end gap-1">
+                    {Array.from({ length: 18 }).map((_, i) => {
+                      const wave = Math.min(1, audioLevel + ((i % 3) + 1) * 0.08);
+                      const height = 4 + Math.round(wave * 32);
+                      return (
+                        <span
+                          key={`wave-${i}`}
+                          className="w-1 rounded-sm bg-cyan-400/85"
+                          style={{ height }}
+                          aria-hidden="true"
+                        />
+                      );
+                    })}
                   </div>
                 </div>
+              )}
 
-                {inboxItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No active transfers</p>
-                ) : (
-                  <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
-                    {inboxItems.map((item) => (
-                      <div key={item.id} className="rounded-md p-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <FileItem>{item.name}</FileItem>
-                          <div className="flex items-center gap-2 text-slate-300">
-                            <span>{formatBytes(item.size)}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removeInboxItem(item.id)}
-                              aria-label={`Remove ${item.name} from inbox`}
-                            >
-                              <X className="size-3.5" />
-                            </Button>
-                          </div>
-                        </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <Progress
-                            value={Math.min(Math.max(item.progress * 100, 0), 100)}
-                            className="h-2 bg-slate-700 [&_[data-slot=progress-indicator]]:bg-cyan-400"
-                          />
-                        </div>
-                        <p className="mt-1 text-slate-400">{formatBytes(Math.max(item.rate, 0))}/s</p>
-                        <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
-                          {item.complete ? "Transfer complete and ready." : `Receiving... ${Math.round(item.progress * 100)}%`}
-                        </p>
-                        <div className="mt-2 flex gap-2">
-                          <Button
-                            variant="secondary"
-                            disabled={!item.complete}
-                            onClick={() => downloadInboxFile(item)}
-                            aria-label={`Download ${item.name}`}
-                          >
-                            Download
-                          </Button>
-                        </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                  <p className="text-slate-400 mb-2">Local</p>
+                  <video ref={localVideoRef} autoPlay playsInline muted className="w-full rounded h-24 bg-slate-900" aria-label="Local video" />
+                </div>
+                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                  <p className="text-slate-400 mb-2">Remote</p>
+                  <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded h-24 bg-slate-900" aria-label="Remote video" />
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* Diagnostics tab */}
+            <TabsContent value="diag" className="flex-1 overflow-y-auto p-4">
+              <div className="space-y-3 font-mono text-xs bg-slate-800/30 border border-slate-700 rounded-lg p-3">
+                <div className="flex justify-between"><span>Data channel</span><span className={diagnostics.dataChannelState === "open" ? "text-emerald-400" : "text-amber-400"}>{diagnostics.dataChannelState}</span></div>
+                <div className="flex justify-between"><span>Buffered</span><span className={diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-400" : "text-emerald-400"}>{formatBytes(diagnostics.bufferedAmount)}</span></div>
+                <div className="flex justify-between"><span>Ping (RTT)</span><span className={diagnostics.rttMs === null ? "text-amber-400" : diagnostics.rttMs > 220 ? "text-rose-400" : "text-emerald-400"}>{formatLatency(diagnostics.rttMs)}</span></div>
+                <div className="flex justify-between"><span>Route</span><span className="text-slate-400">{diagnostics.route}</span></div>
+              </div>
+              <p className="text-xs text-slate-500 mt-4">Updates every second during active connections.</p>
+            </TabsContent>
+
+            {/* Settings tab */}
+            <TabsContent value="settings" className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div>
+                <label htmlFor="mode-select" className="text-xs font-medium text-slate-400 block mb-2">Peer Server</label>
+                <Select value={mode} onValueChange={(m) => {
+                  setMode(m as "cloud" | "local");
+                  applyModeDefaults(m as "cloud" | "local");
+                }}>
+                  <SelectTrigger id="mode-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cloud">Cloud (PeerJS)</SelectItem>
+                    <SelectItem value="local">Local server</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Input aria-label="Host" placeholder="Host" value={host} onChange={(e) => setHost(e.target.value)} />
+              <Input aria-label="Port" placeholder="Port" value={port} onChange={(e) => setPort(e.target.value)} />
+              <Input aria-label="Path" placeholder="Path" value={path} onChange={(e) => setPath(e.target.value)} />
+              <Input aria-label="Secure" placeholder="Secure (true/false)" value={secure} onChange={(e) => setSecure(e.target.value)} />
+              <p className="text-xs text-slate-500">{modeHint}</p>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        {/* Right column: File downloads & transfer queue */}
+        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto lg:col-span-1 sm:col-span-3 lg:col-span-1">
+          <div className="p-4 space-y-6">
+            {/* Received inbox */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Downloads</h2>
+                <span className="text-xs text-slate-500 bg-slate-800/50 px-2 py-1 rounded">{inboxItems.filter(i => i.complete).length}</span>
+              </div>
+              {inboxItems.length === 0 ? (
+                <p className="text-xs text-slate-500">No items</p>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {inboxItems.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-700 bg-slate-800/30 text-xs">
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium">{item.name}</p>
+                        <p className="text-slate-500">{formatBytes(item.size)}</p>
                       </div>
-                    ))}
-                  </Files>
-                )}
+                      {item.complete && (
+                        <Button size="sm" variant="secondary" onClick={() => downloadInboxFile(item)} aria-label={`Download ${item.name}`}>↓</Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <Button variant="outline" size="sm" className="flex-1" onClick={downloadAll}>All</Button>
+                <Button variant="outline" size="sm" className="flex-1" onClick={clearInbox}>Clear</Button>
               </div>
             </div>
-          </section>
-          </TabsContent>
-          </Tabs>
-        </main>
+
+            <div className="h-px bg-slate-700"></div>
+
+            {/* Upload queue notification */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Queue</h2>
+              {uploadedFiles.length + uploadedFolderFiles.length === 0 ? (
+                <p className="text-xs text-slate-500">No files queued</p>
+              ) : (
+                <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2">
+                  <p className="text-xs font-mono font-semibold">{uploadedFiles.length + uploadedFolderFiles.length} item(s) ready</p>
+                  <p className="text-xs text-slate-400 mt-1">Use Files tab to send</p>
+                </div>
+              )}
+            </div>
+
+            <div className="h-px bg-slate-700"></div>
+
+            {/* Server info */}
+            <div className="space-y-3 text-xs">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Info</h2>
+              <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-1 font-mono text-slate-400">
+                <p>Status: <span className="text-emerald-400 font-semibold">Active</span></p>
+                <p>Mode: <span className="text-cyan-400 font-semibold">{mode === "cloud" ? "Cloud" : "Local"}</span></p>
+                <p className="text-slate-500 text-xs mt-2">Keep tab open during transfers</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* Hidden file inputs */}
+      <input ref={fileInputRef} className="hidden" type="file" multiple onChange={(e) => onFilesSelected(e.target.files, "file")} />
+      <input ref={folderInputRef} className="hidden" type="file" multiple onChange={(e) => onFilesSelected(e.target.files, "folder")} />
     </div>
-        </SidebarInset>
-    </SidebarProvider>
   );
 }
