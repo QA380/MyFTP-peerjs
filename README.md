@@ -44,10 +44,5 @@ For full system analysis. [**Click Here**](https://github.com/QA380/MyFTP-peerjs
  * Network Optimization
 
  **Fix:**
- * ~~Inbox received double the notifaction for single file~~
- * ~~Toggling audio-video reset the connection~~
- * Ghost file appears, only 1 item sent yet 2 received but only 1 can be downloaded
- * Audio-Video did not terminated when call end
- * Cursor highlight when hover on files, highlight too bright
- * Disconnecting did not end calls, unless reconnect peers
+ * Sidebar collapse state
  * 
