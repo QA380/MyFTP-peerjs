@@ -5,7 +5,7 @@ import Peer, { DataConnection, MediaConnection } from "peerjs";
 import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
-import { Tabs, TabsContent, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import { Button } from "@/components/animate-ui/components/radix/button";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
@@ -379,6 +379,7 @@ export default function Home() {
   const workerQueueRef = useRef<WorkerOutboundMessage[]>([]);
   const workerQueueRunningRef = useRef(false);
   const workspaceShellRef = useRef<HTMLDivElement | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const isResizingWorkspaceRef = useRef(false);
   const cancelledIncomingTransfersRef = useRef<Set<string>>(new Set());
   const cancelledOutgoingTransfersRef = useRef<Set<string>>(new Set());
@@ -1012,7 +1013,6 @@ export default function Home() {
     (conn: DataConnection) => {
       activeConnRef.current = conn;
       setConnState(`Connected to ${conn.peer}`);
-      setNotifications((prev) => ({ ...prev, connection: true }));
       pushLog(`Connection opened with ${conn.peer}`);
       if (conn.serialization !== "raw") {
         pushLog(
@@ -2055,13 +2055,13 @@ export default function Home() {
         {/* Center column: Tabbed interface */}
         <div className="border-r border-slate-800 bg-[#0a0f1f] overflow-hidden flex flex-col sm:col-span-2 lg:col-span-2">
           <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call" | "chat" | "diag" | "settings")} className="flex flex-col h-full">
-            <div className="border-b border-slate-700 px-4 flex gap-1 bg-slate-900/30 overflow-x-auto">
+            <TabsList className="border-b border-slate-700 px-4 flex gap-1 bg-slate-900/30 overflow-x-auto rounded-none">
               <TabsTrigger value="transfer" className="text-xs whitespace-nowrap">Files</TabsTrigger>
               <TabsTrigger value="chat" className="text-xs whitespace-nowrap">Chat</TabsTrigger>
               <TabsTrigger value="call" className="text-xs whitespace-nowrap">Calls</TabsTrigger>
               <TabsTrigger value="diag" className="text-xs whitespace-nowrap">Diagnostics</TabsTrigger>
               <TabsTrigger value="settings" className="text-xs whitespace-nowrap">Settings</TabsTrigger>
-            </div>
+            </TabsList>
 
             {/* Transfer/Files tab */}
             <TabsContent value="transfer" className="flex-1 overflow-y-auto p-4">
