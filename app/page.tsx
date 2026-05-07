@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import { Button } from "@/components/animate-ui/components/radix/button";
+import { Files, FolderTrigger, FolderContent, FileItem } from "@/components/animate-ui/components/radix/files";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
 import { supabase } from "@/lib/supabase";
@@ -881,6 +882,7 @@ export default function Home() {
     triggerBrowserDownload(item.url, item.name.split("/").pop() ?? item.name);
   }, []);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const downloadInboxFolder = useCallback(async (folderPath: string, targetDirectory?: FileSystemDirectoryHandle) => {
     const folderItems = inboxItemsRef.current.filter(
       (item) => item.complete && item.url && item.source === "Folder" && item.name.startsWith(`${folderPath}/`)
@@ -930,34 +932,23 @@ export default function Home() {
       return;
     }
 
-    const folderRoots = new Set(
-      downloadable
-        .filter((item) => item.source === "Folder" && item.name.includes("/"))
-        .map((item) => normalizePathParts(item.name)[0])
-        .filter((root): root is string => Boolean(root))
-    );
+    pushLog("Creating archive...");
+    const zip = new JSZip();
 
-    let folderTargetDirectory: FileSystemDirectoryHandle | undefined;
-    if (folderRoots.size > 0) {
-      const picker = (window as Window & {
-        showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
-      }).showDirectoryPicker;
-
-      if (picker) {
-        folderTargetDirectory = await picker();
+    try {
+      for (const item of downloadable) {
+        const response = await fetch(item.url);
+        const blob = await response.blob();
+        zip.file(item.name, blob);
       }
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      downloadBlobFile(zipBlob, "myftp-downloads.zip");
+      pushLog(`Created and downloaded myftp-downloads.zip with ${downloadable.length} item(s).`);
+    } catch (error) {
+      pushLog(`Failed to create archive: ${error instanceof Error ? error.message : "Unknown error"}`, true);
     }
-
-    for (const folderRoot of folderRoots) {
-      await downloadInboxFolder(folderRoot, folderTargetDirectory);
-    }
-
-    downloadable
-      .filter((item) => item.source !== "Folder" || !item.name.includes("/"))
-      .forEach((item) => downloadInboxFile(item));
-
-    pushLog(`Downloading ${downloadable.length} received file(s).`);
-  }, [downloadInboxFile, downloadInboxFolder, pushLog]);
+  }, [pushLog]);
 
   // Clear inbox
   const clearInbox = useCallback(() => {
@@ -1492,6 +1483,16 @@ export default function Home() {
     [pushLog, summarizeSelection]
   );
 
+  // Remove a queued file by index
+  const removeQueuedFile = useCallback((index: number, type: "file" | "folder") => {
+    if (type === "file") {
+      setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+    } else {
+      setUploadedFolderFiles(prev => prev.filter((_, i) => i !== index));
+    }
+    pushLog(`Removed from queue.`);
+  }, [pushLog]);
+
   // Copy peer ID
   const copyPeerId = useCallback(async () => {
     const id = myId.trim();
@@ -1894,7 +1895,7 @@ export default function Home() {
       <div className="flex-1 overflow-hidden grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-0 bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827]">
         
         {/* Left column: Peer connection & account */}
-        <div className="border-r border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1">
+        <div className="border-r border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 h-full">
           <div className="p-4 space-y-6">
             {/* Connect to peer section */}
             <div className="space-y-3">
@@ -2010,7 +2011,7 @@ export default function Home() {
               <TabsTrigger value="transfer" className="text-xs whitespace-nowrap">Files</TabsTrigger>
               <TabsTrigger value="chat" className="text-xs whitespace-nowrap">Chat</TabsTrigger>
               <TabsTrigger value="call" className="text-xs whitespace-nowrap">Calls</TabsTrigger>
-              <TabsTrigger value="diag" className="text-xs whitespace-nowrap">Diagnostics</TabsTrigger>
+              <TabsTrigger value="diag" className="text-xs whitespace-nowrap">Logs</TabsTrigger>
               <TabsTrigger value="settings" className="text-xs whitespace-nowrap">Settings</TabsTrigger>
             </TabsList>
 
@@ -2039,7 +2040,10 @@ export default function Home() {
                           <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
                         </div>
                         <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
-                        <div className="text-xs text-slate-400 mt-1">{item.complete ? "Done" : `${Math.round(item.progress * 100)}%`}</div>
+                        <div className="flex justify-between text-xs text-slate-400 mt-1">
+                          <span>{item.complete ? "Done" : `${Math.round(item.progress * 100)}%`}</span>
+                          <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -2057,7 +2061,10 @@ export default function Home() {
                           <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
                         </div>
                         <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
-                        <div className="text-xs text-slate-400 mt-1">{item.complete ? "Ready" : `${Math.round(item.progress * 100)}%`}</div>
+                        <div className="flex justify-between text-xs text-slate-400 mt-1">
+                          <span>{item.complete ? "Ready" : `${Math.round(item.progress * 100)}%`}</span>
+                          <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -2069,10 +2076,12 @@ export default function Home() {
 
             {/* Chat tab */}
             <TabsContent value="chat" className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs font-mono" ref={logContainerRef} role="log" aria-live="polite">
-                {logs.slice(-50).map((row) => (
-                  <div key={row.id} className={row.error ? "text-rose-400" : row.text.includes("Sent:") ? "text-cyan-400" : "text-slate-300"}>
-                    {row.text}
+              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs" ref={logContainerRef} role="log" aria-live="polite">
+                {logs.filter(row => row.text.includes("Sent:") || row.text.includes("Received:")).slice(-50).map((row) => (
+                  <div key={row.id} className="bg-slate-800/30 border border-slate-700 rounded p-2">
+                    <div className="text-slate-400 font-mono text-xs">
+                      {row.text.includes("Sent:") ? "You" : "Peer"}: {row.text.replace(/^.*?Sent:|^.*?Received:/, "").trim()}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2097,8 +2106,8 @@ export default function Home() {
               </div>
               <Button variant="destructive" className="w-full" onClick={endCall}>End Call</Button>
               <div className="flex gap-2">
-                <Button variant={micEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleMic}>{micEnabled ? "🔊" : "🔇"} Mic</Button>
-                <Button variant={cameraEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleCamera}>{cameraEnabled ? "📹" : "❌"} Cam</Button>
+                <Button variant={micEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleMic}>{micEnabled ? "Mic On" : "Mic Off"}</Button>
+                <Button variant={cameraEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleCamera}>{cameraEnabled ? "Cam on" : "Cam Off"}</Button>
               </div>
 
               {callType === "audio" && (
@@ -2133,15 +2142,18 @@ export default function Home() {
               </div>
             </TabsContent>
 
-            {/* Diagnostics tab */}
-            <TabsContent value="diag" className="flex-1 overflow-y-auto p-4">
-              <div className="space-y-3 font-mono text-xs bg-slate-800/30 border border-slate-700 rounded-lg p-3">
-                <div className="flex justify-between"><span>Data channel</span><span className={diagnostics.dataChannelState === "open" ? "text-emerald-400" : "text-amber-400"}>{diagnostics.dataChannelState}</span></div>
-                <div className="flex justify-between"><span>Buffered</span><span className={diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-400" : "text-emerald-400"}>{formatBytes(diagnostics.bufferedAmount)}</span></div>
-                <div className="flex justify-between"><span>Ping (RTT)</span><span className={diagnostics.rttMs === null ? "text-amber-400" : diagnostics.rttMs > 220 ? "text-rose-400" : "text-emerald-400"}>{formatLatency(diagnostics.rttMs)}</span></div>
-                <div className="flex justify-between"><span>Route</span><span className="text-slate-400">{diagnostics.route}</span></div>
+            {/* Logs tab */}
+            <TabsContent value="diag" className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs font-mono" ref={logContainerRef} role="log" aria-live="polite">
+                {logs.slice(-50).map((row) => (
+                  <div key={row.id} className={row.error ? "text-rose-400" : row.text.includes("Sent:") ? "text-cyan-400" : "text-slate-300"}>
+                    {row.text}
+                  </div>
+                ))}
               </div>
-              <p className="text-xs text-slate-500 mt-4">Updates every second during active connections.</p>
+              <div className="border-t border-slate-700 p-3 bg-slate-900/30">
+                <Button variant="outline" size="sm" className="w-full" onClick={() => { setLogs([]); pushLog("Chat cleared."); }}>Clear Logs</Button>
+              </div>
             </TabsContent>
 
             {/* Settings tab */}
@@ -2171,7 +2183,7 @@ export default function Home() {
         </div>
 
         {/* Right column: File downloads & transfer queue */}
-        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 lg:col-span-1">
+        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 lg:col-span-1 h-full">
           <div className="p-4 space-y-6">
             {/* Received inbox */}
             <div className="space-y-3">
@@ -2204,28 +2216,78 @@ export default function Home() {
 
             <div className="h-px bg-slate-700"></div>
 
-            {/* Upload queue notification */}
+            {/* Upload queue with file tree */}
             <div className="space-y-3">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Queue</h2>
               {uploadedFiles.length + uploadedFolderFiles.length === 0 ? (
                 <p className="text-xs text-slate-500">No files queued</p>
               ) : (
-                <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2">
-                  <p className="text-xs font-mono font-semibold">{uploadedFiles.length + uploadedFolderFiles.length} item(s) ready</p>
-                  <p className="text-xs text-slate-400 mt-1">Use Files tab to send</p>
+                <div className="bg-slate-800/30 border border-slate-700 rounded-lg overflow-hidden">
+                  <Files className="text-xs">
+                    {uploadedFiles.length > 0 && (
+                      <div>
+                        <FolderTrigger>Files</FolderTrigger>
+                        <FolderContent>
+                          {uploadedFiles.map((file, idx) => (
+                            <div key={`file-${idx}`} className="flex items-center justify-between gap-1">
+                              <FileItem>{file.path}</FileItem>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => removeQueuedFile(idx, "file")}
+                                className="h-5 px-1 text-xs"
+                                aria-label={`Remove ${file.path}`}
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          ))}
+                        </FolderContent>
+                      </div>
+                    )}
+                    {uploadedFolderFiles.length > 0 && (
+                      <div>
+                        <FolderTrigger>Folder</FolderTrigger>
+                        <FolderContent>
+                          {uploadedFolderFiles.map((file, idx) => (
+                            <div key={`folder-${idx}`} className="flex items-center justify-between gap-1">
+                              <FileItem>{file.path}</FileItem>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => removeQueuedFile(idx, "folder")}
+                                className="h-5 px-1 text-xs"
+                                aria-label={`Remove ${file.path}`}
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          ))}
+                        </FolderContent>
+                      </div>
+                    )}
+                  </Files>
+                  <p className="text-xs text-slate-400 p-2 border-t border-slate-700 mt-2">Use Files tab to send</p>
                 </div>
               )}
             </div>
 
             <div className="h-px bg-slate-700"></div>
 
-            {/* Server info */}
+            {/* Server info & diagnostics */}
             <div className="space-y-3 text-xs">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Info</h2>
               <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-1 font-mono text-slate-400">
                 <p>Status: <span className="text-emerald-400 font-semibold">Active</span></p>
                 <p>Mode: <span className="text-cyan-400 font-semibold">{mode === "cloud" ? "Cloud" : "Local"}</span></p>
                 <p className="text-slate-500 text-xs mt-2">Keep tab open during transfers</p>
+              </div>
+              <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-2 font-mono text-xs">
+                <p className="text-slate-400 font-semibold mb-2">Diagnostics</p>
+                <div className="flex justify-between"><span className="text-slate-400">Channel</span><span className={diagnostics.dataChannelState === "open" ? "text-emerald-400" : "text-amber-400"}>{diagnostics.dataChannelState}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Buffered</span><span className={diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-400" : "text-emerald-400"}>{formatBytes(diagnostics.bufferedAmount)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Ping (RTT)</span><span className={diagnostics.rttMs === null ? "text-amber-400" : diagnostics.rttMs > 220 ? "text-rose-400" : "text-emerald-400"}>{formatLatency(diagnostics.rttMs)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Route</span><span className="text-slate-500">{diagnostics.route}</span></div>
               </div>
             </div>
           </div>
