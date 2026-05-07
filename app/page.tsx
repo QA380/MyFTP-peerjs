@@ -287,31 +287,13 @@ const writeBlobToDirectory = async (
   await writable.close();
 };
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const sortTreeNodes = (nodes: TreeNode[]): TreeNode[] =>
-  nodes
-    .sort((left, right) => {
-      if (left.isFolder !== right.isFolder) {
-        return left.isFolder ? -1 : 1;
-      }
 
-      return left.name.localeCompare(right.name);
-    })
-    .map((node) => ({
-      ...node,
-      children: sortTreeNodes(node.children),
-    }));
 
 
 
 export default function Home() {
   const [panelTab, setPanelTab] = useState<"transfer" | "call" | "chat" | "diag" | "settings">("transfer");
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [notifications, setNotifications] = useState({
-    call: false,
-    file: false,
-    connection: false,
-  });
+
   // Connection mode and server settings
   const [mode, setMode] = useState<"cloud" | "local">("cloud");
   const [host, setHost] = useState("0.peerjs.com");
@@ -340,8 +322,6 @@ export default function Home() {
   const [uploadedFolderFiles, setUploadedFolderFiles] = useState<TreeEntry[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [workspaceSplit, setWorkspaceSplit] = useState(64);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authUserId, setAuthUserId] = useState<string | null>(null);
@@ -378,9 +358,7 @@ export default function Home() {
   const transferWorkerRef = useRef<Worker | null>(null);
   const workerQueueRef = useRef<WorkerOutboundMessage[]>([]);
   const workerQueueRunningRef = useRef(false);
-  const workspaceShellRef = useRef<HTMLDivElement | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const isResizingWorkspaceRef = useRef(false);
+  // Workspace resize logic removed
   const cancelledIncomingTransfersRef = useRef<Set<string>>(new Set());
   const cancelledOutgoingTransfersRef = useRef<Set<string>>(new Set());
   const transferPromisesRef = useRef<
@@ -1037,7 +1015,6 @@ export default function Home() {
           if (control.kind === "transfer-start") {
             const source = control.label === "Folder" ? "Folder" : "Files";
             incomingTransferLabelRef.current = source;
-            setNotifications((prev) => ({ ...prev, file: true }));
             pushLog(`Incoming ${source.toLowerCase()} transfer: ${control.count ?? 0} item(s).`);
             return;
           }
@@ -1213,13 +1190,11 @@ export default function Home() {
       });
 
       peer.on("connection", (conn) => {
-        setNotifications((prev) => ({ ...prev, connection: true }));
         pushLog(`Incoming connection from ${conn.peer}`);
         conn.on("open", () => wireConnection(conn));
       });
 
       peer.on("call", async (call) => {
-        setNotifications((prev) => ({ ...prev, call: true }));
         pushLog(`Incoming call from ${call.peer}`);
         try {
           if (!localStreamRef.current) {
@@ -1846,30 +1821,6 @@ export default function Home() {
     cameraEnabledRef.current = cameraEnabled;
   }, [cameraEnabled]);
 
-  useEffect(() => {
-    const handleMouseMove = (event: MouseEvent) => {
-      if (!isResizingWorkspaceRef.current || !workspaceShellRef.current) {
-        return;
-      }
-
-      const bounds = workspaceShellRef.current.getBoundingClientRect();
-      const nextSplit = ((event.clientX - bounds.left) / bounds.width) * 100;
-      setWorkspaceSplit(Math.min(75, Math.max(40, nextSplit)));
-    };
-
-    const stopResize = () => {
-      isResizingWorkspaceRef.current = false;
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", stopResize);
-
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", stopResize);
-    };
-  }, []);
-
   // Render audio meter
   useEffect(() => {
     const stream = localStreamRef.current;
@@ -2220,7 +2171,7 @@ export default function Home() {
         </div>
 
         {/* Right column: File downloads & transfer queue */}
-        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto lg:col-span-1 sm:col-span-3 lg:col-span-1">
+        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 lg:col-span-1">
           <div className="p-4 space-y-6">
             {/* Received inbox */}
             <div className="space-y-3">
