@@ -168,17 +168,6 @@ const formatLatency = (rttMs: number | null): string => {
   return `${Math.round(rttMs)} ms`;
 };
 
-// Color-code diagnostics based on route, latency, and buffer pressure
-// Message sent to log
-type WorkerInboundMessage = {
-  type: "prepare-file";
-  transferId: string;
-  source: "Files" | "Folder";
-  file: File;
-  chunkSize: number;
-};
-
-// Message sent to log
 type WorkerOutboundMessage =
   | {
       type: "prepared-start";
@@ -208,14 +197,6 @@ type WorkerOutboundMessage =
 type TreeEntry = {
   path: string;
   size: number;
-};
-
-type TreeNode = {
-  path: string;
-  name: string;
-  size: number;
-  isFolder: boolean;
-  children: TreeNode[];
 };
 
 const normalizePathParts = (path: string) => path.replaceAll("\\", "/").split("/").filter(Boolean);
@@ -1323,12 +1304,6 @@ export default function Home() {
         return;
       }
 
-      const worker = transferWorkerRef.current;
-      if (!worker) {
-        pushLog("Transfer worker is not ready . Please retry in a second.", true);
-        return;
-      }
-
       if (activeConnRef.current) {
         sendControlMessage(activeConnRef.current, {
           kind: "transfer-start",
@@ -1341,30 +1316,62 @@ export default function Home() {
         const transferId = `${Date.now()}-${Math.random()}`;
         const mime = file.type || "application/octet-stream";
         const fileName = file.webkitRelativePath || file.name;
+        const totalChunks = Math.max(1, Math.ceil(file.size / FILE_CHUNK_SIZE));
+        const conn = activeConnRef.current;
 
         if (isLikelyCompressed(fileName, mime)) {
           pushLog(`Skipping app-level compression for ${fileName}; file is already compressed or media.`);
         }
 
-        beginOutgoingTransfer(transferId, label, fileName, file.size, Math.ceil(file.size / FILE_CHUNK_SIZE));
-
-        const completion = new Promise<void>((resolve, reject) => {
-          transferPromisesRef.current.set(transferId, { resolve, reject });
-        });
-
-        worker.postMessage({
-          type: "prepare-file",
-          transferId,
-          source: label,
-          file,
-          chunkSize: FILE_CHUNK_SIZE,
-        } satisfies WorkerInboundMessage);
+        beginOutgoingTransfer(transferId, label, fileName, file.size, totalChunks);
 
         try {
-          await completion;
+          if (!conn || !conn.open) {
+            throw new Error("Connection closed during transfer");
+          }
+
+          sendControlMessage(conn, {
+            kind: "file-start",
+            transferId,
+            source: label,
+            name: fileName,
+            mime,
+            size: file.size,
+            totalChunks,
+          });
+
+          for (let index = 0, offset = 0; offset < file.size; index += 1, offset += FILE_CHUNK_SIZE) {
+            if (!conn.open) {
+              throw new Error("Connection closed during transfer");
+            }
+
+            const chunkBlob = file.slice(offset, Math.min(offset + FILE_CHUNK_SIZE, file.size));
+            const data = await chunkBlob.arrayBuffer();
+
+            await waitForBufferedDrain(conn);
+            sendControlMessage(conn, {
+              kind: "file-chunk-meta",
+              transferId,
+              index,
+              size: data.byteLength,
+            });
+            await waitForBufferedDrain(conn);
+            conn.send(data);
+            updateOutgoingTransferProgress(transferId, data.byteLength);
+          }
+
+          await waitForBufferedDrain(conn);
+          sendControlMessage(conn, {
+            kind: "file-end",
+            transferId,
+          });
+
+          flushOutgoingTransfer(transferId);
           pushLog(`Sent ${label.toLowerCase()}: ${fileName} (${formatBytes(file.size)})`);
         } catch (err) {
           pushLog(`Transfer canceled/failed for ${fileName}: ${String(err)}`, true);
+          sendingTransfersRef.current.delete(transferId);
+          setSendingItems((prev) => prev.filter((item) => item.id !== transferId));
         }
       }
 
@@ -1372,10 +1379,13 @@ export default function Home() {
     },
     [
       beginOutgoingTransfer,
+      flushOutgoingTransfer,
       isLikelyCompressed,
       pushLog,
       requireConnection,
       sendControlMessage,
+      updateOutgoingTransferProgress,
+      waitForBufferedDrain,
     ]
   );
 
