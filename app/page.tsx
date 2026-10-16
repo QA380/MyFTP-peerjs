@@ -6,27 +6,10 @@ import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
-<<<<<<< HEAD
 import { Button } from "@/components/animate-ui/components/radix/button";
 import { Files, FolderTrigger, FolderContent, FileItem } from "@/components/animate-ui/components/radix/files";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
-=======
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupLabel,
-  SidebarInset,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarRail,
-  SidebarTrigger,
-} from "@/components/animate-ui/components/radix/sidebar";
->>>>>>> parent of 924c96b (design-update29.4)
 import { supabase } from "@/lib/supabase";
 
 
@@ -172,13 +155,7 @@ const formatBytes = (bytes: number): string => {
   return `${scaled.toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
 };
 
-const inputClass =
-  "w-full rounded-xl border border-slate-700 bg-[#030712]/80 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400";
-const buttonClass =
-  "rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400";
-// Deviding file into chunks for easier transfer
 const FILE_CHUNK_SIZE = 64 * 1024;
-// Pause sending when RTC buffering gets slow
 const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
 // Small wait used while the outbound buffer drains
 const BUFFER_CHECK_INTERVAL_MS = 10;
@@ -1970,7 +1947,6 @@ export default function Home() {
 
             <div className="h-px bg-slate-700"></div>
 
-<<<<<<< HEAD
             {/* Trusted peers section */}
             <div className="space-y-3">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Trusted Peers</h2>
@@ -1984,63 +1960,10 @@ export default function Home() {
                       <Button
                         variant="secondary"
                         size="sm"
-=======
-            <SidebarGroup>
-              <SidebarGroupLabel className="text-slate-400">Account</SidebarGroupLabel>
-              <div className="space-y-2 px-2 pb-2">
-                <input
-                  className={inputClass}
-                  onChange={(event) => setAuthEmail(event.target.value)}
-                  placeholder="Account email"
-                  type="email"
-                  value={authEmail}
-                />
-                <input
-                  className={inputClass}
-                  onChange={(event) => setAuthPassword(event.target.value)}
-                  placeholder="Account password"
-                  type="password"
-                  value={authPassword}
-                />
-                <button className={buttonClass} onClick={signUpAccount} type="button">
-                  <UserPlus className="mr-2 inline size-4" />
-                  Sign Up
-                </button>
-                <button className={buttonClass} onClick={signInAccount} type="button">
-                  <LogIn className="mr-2 inline size-4" />
-                  Sign In
-                </button>
-                <button
-                  className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
-                  onClick={signOutAccount}
-                  type="button"
-                >
-                  <LogOut className="mr-2 inline size-4" />
-                  Sign Out
-                </button>
-                <p className="text-xs text-slate-300">
-                  {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
-                </p>
-              </div>
-            </SidebarGroup>
-
-            <SidebarGroup>
-              <SidebarGroupLabel className="text-slate-400">Trusted Connections</SidebarGroupLabel>
-              <div className="space-y-2 px-2 pb-2">
-                {trustedPeers.length === 0 ? (
-                  <p className="rounded-lg border border-slate-700 bg-[#030712] px-2 py-2 text-xs text-slate-400">No trusted peers saved yet.</p>
-                ) : (
-                  trustedPeers.map((peerId) => (
-                    <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-[#030712] px-2 py-2">
-                      <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
-                      <button
-                        className="rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
->>>>>>> parent of 924c96b (design-update29.4)
                         onClick={() => {
                           setTargetId(peerId);
                           window.setTimeout(() => connectToTarget(), 0);
                         }}
-<<<<<<< HEAD
                         aria-label={`Connect to ${peerId}`}
                       >
                         Go
@@ -2084,305 +2007,11 @@ export default function Home() {
               <div className="grid grid-cols-2 gap-2">
                 <Button variant="default" size="sm" onClick={signUpAccount}>Sign Up</Button>
                 <Button variant="default" size="sm" onClick={signInAccount}>Sign In</Button>
-=======
-                        type="button"
-                      >
-                        <ShieldCheck className="mr-1 inline size-3" />
-                        Reconnect
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </SidebarGroup>
-          </SidebarContent>
-          <SidebarFooter className="p-2">
-            <div
-              className="mb-2 rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-xs text-slate-300"
-              onClick={() => setNotifications({ call: false, file: false, connection: false })}
-              role="button"
-              tabIndex={0}
-            >
-              {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
-            </div>
-          </SidebarFooter>
-          <SidebarRail />
-        </Sidebar>
-
-        <SidebarInset className="bg-transparent">
-          <div className="mx-auto w-full max-w-[96rem] px-2 pb-5 pt-5 sm:px-3 lg:px-4">
-        <div ref={workspaceShellRef} className="flex flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-0">
-
-        {/* Left-side workspace for connection setup, logs, and diagnostics */}
-        <main
-          className="rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3 lg:rounded-r-none"
-          style={{ width: "100%", flexBasis: `${workspaceSplit}%` }}
-        >
-          <h1 className="text-2xl font-bold tracking-tight">PeerJS Live Test</h1>
-          <p className="mt-2 text-sm text-slate-300">
-            Connect | transfer files/folders | calls
-          </p>
-
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
-            {/* Configure peer server and choose cloud or local mode */}
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <select
-                  className={inputClass}
-                  value={mode}
-                  onChange={(e) => {
-                    const nextMode = e.target.value as "cloud" | "local";
-                    setMode(nextMode);
-                    applyModeDefaults(nextMode);
-                  }}
-                >
-                  <option value="cloud">Cloud</option>
-                  <option value="local">Local server</option>
-                </select>
-                <input
-                  className={inputClass}
-                  placeholder="Host"
-                  value={host}
-                  onChange={(e) => setHost(e.target.value)}
-                />
-                <input
-                  className={inputClass}
-                  placeholder="Port"
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                />
-                <input
-                  className={inputClass}
-                  placeholder="Path"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <input
-                  className={inputClass}
-                  placeholder="Secure: true/false"
-                  value={secure}
-                  onChange={(e) => setSecure(e.target.value)}
-                />
-                <button className={buttonClass} onClick={() => makePeer()}>
-                  Reconnect Peer
-                </button>
-                <button
-                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
-                  onClick={() => makePeer(true)}
-                  type="button"
-                >
-                  Generate New ID
-                </button>
-              </div>
-
-              <p className="text-xs text-slate-400">{modeHint}</p>
-
-              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300">
-                <strong className="text-slate-100">Peer ID:</strong>
-                <button
-                  className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
-                  onClick={copyPeerId}
-                  title="Click to copy"
-                >
-                  {myId}
-                </button>
-              </div>
-
-              <button
-                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
-                onClick={copyShareLink}
-                type="button"
-              >
-                Share link
-              </button>
-
-              <button
-                className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
-                onClick={saveTrustedConnection}
-                type="button"
-              >
-                Save as Trusted Connection
-              </button>
-            </section>
-
-            {/* Show current connection state, connect/disconnect, and live route stats */}
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-[#101a2e]/70 p-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                <input
-                  className={inputClass}
-                  placeholder="Enter target peer ID"
-                  value={targetId}
-                  onChange={(e) => setTargetId(e.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      if (connState === "Not connected") {
-                        connectToTarget();
-                      } else {
-                        disconnectFromTarget();
-                      }
-                    }
-                  }}
-                />
-                <button
-                  className={
-                    connState === "Not connected"
-                      ? buttonClass
-                      : "rounded-xl border border-rose-500/50 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
-                  }
-                  onClick={() => {
-                    if (connState === "Not connected") {
-                      connectToTarget();
-                    } else {
-                      disconnectFromTarget();
-                    }
-                  }}
-                >
-                  {connState === "Not connected" ? "Connect" : "Disconnect"}
-                </button>
-              </div>
-
-              <input
-                className={inputClass}
-                placeholder="Name (optional)"
-                value={sender}
-                onChange={(e) => setSender(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                  }
-                }}
-              />
-
-              <button
-                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
-                onClick={() => {
-                  setLogs([]);
-                  pushLog("Cleared!");
-                }}
-              >
-                Clear chat and log
-              </button>
-
-              <p className="text-sm text-slate-300">
-                Connection: <strong className="text-slate-100">{connState}</strong>
-              </p>
-
-              <div className="rounded-lg border border-slate-700 bg-[#030712] px-3 py-2 text-xs text-slate-300">
-                <p className="font-mono uppercase tracking-wide text-slate-300">Connection Diagnostics</p>
-                <p 
-                  className={`font-mono ${
-                    diagnostics.dataChannelState === "open" 
-                    ? "text-emerald-300" 
-                    : "text-amber-300"}`}
-                >
-                  Data channel......: {diagnostics.dataChannelState}
-                </p>
-                <p 
-                  className={`font-mono ${
-                    diagnostics.bufferedAmount 
-                      > BUFFER_HIGH_WATERMARK 
-                      ? "text-rose-300" 
-                      : "text-emerald-300"}`}
-                >
-                  Buffered outbound : {formatBytes(diagnostics.bufferedAmount)}
-                </p>
-                <p className={`font-mono ${
-                    diagnostics.rttMs === null
-                      ? "text-amber-300"
-                      : diagnostics.rttMs > 220
-                        ? "text-rose-300"
-                        : "text-emerald-300"
-                  }`}
-                >
-                  Ping..............: {formatLatency(diagnostics.rttMs)}
-                </p>
-                <p className={`font-mono ${diagnosticsColor(diagnostics)}`}>
-                  Route.............: {diagnostics.route === "unknown" ? "Unknown" : diagnostics.route === "relay" ? "Relay" : "Direct"}
-                </p>
->>>>>>> parent of 924c96b (design-update29.4)
               </div>
               <Button variant="outline" size="sm" className="w-full" onClick={signOutAccount}>Sign Out</Button>
               <p className="text-xs text-slate-400">{authUserId ? `Signed in: ${authUserId.slice(0, 8)}...` : "Not signed in"}</p>
             </div>
           </div>
-<<<<<<< HEAD
-=======
-
-          {/* Event log for sent messages, received messages, and transfer updates */}
-          <section className="mt-4 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <input
-                className={inputClass}
-                placeholder="Type message"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    sendCurrentMessage();
-                  }
-                }}
-              />
-              <button
-                className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
-                onClick={sendCurrentMessage}
-              >
-                Send
-              </button>
-            </div>
-            <div
-              ref={logContainerRef}
-              className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
-            >
-              {logs.map((row) => {
-                let textClass = "text-slate-200";
-
-                // Error logs = red
-                if (row.error) {
-                  textClass = "text-rose-400";
-                }
-                // Received messages = blue
-                else if (row.text.includes("Received:")) {
-                  textClass = "text-[#0069d1]";
-                }
-                // Sent messages = dark cyan
-                else if(row.text.includes("Sent:")){
-                  textClass = "text-[#0096ad]"
-                }
-                else if(row.text.includes("Incoming") || row.text.includes("Received")){
-                  textClass = "text-[#00ad4e]"
-                }
-                // All remaining chat/log rows keep the default text color (it's white)
-
-                return (
-                  <div key={row.id} className={textClass}>
-                    {row.text}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        </main>
-
-        <div
-          aria-label="Resize workspaces"
-          className="hidden w-2 cursor-col-resize items-stretch justify-center lg:flex"
-          onMouseDown={() => {
-            isResizingWorkspaceRef.current = true;
-          }}
-          role="separator"
-        >
-          <div className="w-px rounded-full bg-slate-700 transition hover:bg-cyan-400" />
->>>>>>> parent of 924c96b (design-update29.4)
         </div>
 
         {/* Center column: Tabbed interface */}
@@ -2396,7 +2025,6 @@ export default function Home() {
               <TabsTrigger value="settings" className="text-xs whitespace-nowrap">Settings</TabsTrigger>
             </TabsList>
 
-<<<<<<< HEAD
             {/* Transfer/Files tab */}
             <TabsContent value="transfer" className="flex-1 overflow-y-auto p-4">
               <div className="space-y-4">
@@ -2409,178 +2037,6 @@ export default function Home() {
                   <Button variant="default" size="sm" onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}>Send Files</Button>
                   <Button variant="default" size="sm" onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}>Send Folder</Button>
                 </div>
-=======
-          {/* Call controls plus local and remote video panes */}
-          <TabsContent value="call">
-          <section className="rounded-xl border border-slate-800 bg-[#0e182b]/75 p-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
-
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button className={buttonClass} onClick={() => startCall("audio")}>
-                Audio Call
-              </button>
-              <button className={buttonClass} onClick={() => startCall("video")}>
-                Video Call
-              </button>
-            </div>
-
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <button
-                className="rounded-xl border border-rose-500/50 bg-rose-500/15 px-3 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
-                onClick={endCall}
-                type="button"
-              >
-                End Call
-              </button>
-              <button
-                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-                  micEnabled
-                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                }`}
-                onClick={toggleMic}
-                type="button"
-                title={micEnabled ? "Mute microphone" : "Unmute microphone"}
-              >
-                {micEnabled ? <Mic className="size-4" /> : <MicOff className="size-4" />}
-              </button>
-              <button
-                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-                  cameraEnabled
-                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                }`}
-                onClick={toggleCamera}
-                type="button"
-                title={cameraEnabled ? "Disable camera" : "Enable camera"}
-              >
-                {cameraEnabled ? <Video className="size-4" /> : <VideoOff className="size-4" />}
-              </button>
-            </div>
-
-            {callType === "audio" && (
-              <div className="mt-3 rounded-lg border border-slate-700 bg-[#030712] p-3">
-                <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Voice Activity</p>
-                <div className="flex h-14 items-end gap-1">
-                  {Array.from({ length: 18 }).map((_, index) => {
-                    const wave = Math.min(1, audioLevel + ((index % 3) + 1) * 0.08);
-                    const height = 6 + Math.round(wave * 42);
-
-                    return (
-                      <span
-                        key={`wave-${index}`}
-                        className="w-1.5 rounded-sm bg-cyan-400/85 transition-all duration-100"
-                        style={{ height }}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
-                <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Send</h3>
-                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" />
-              </div>
-              <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
-                <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Receive</h3>
-                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" />
-              </div>
-            </div>
-
-            <p className="mt-3 text-xs text-slate-400">Secured Network</p>
-          </section>
-          </TabsContent>
-
-          {/* File and folder upload controls plus sender/receiver progress panels */}
-          <TabsContent value="transfer">
-          <section className="rounded-xl border border-slate-800 bg-[#121d31]/75 p-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">File Transfer</h2>
-            <div className="mt-3 space-y-2">
-              <input
-                ref={fileInputRef}
-                className="hidden"
-                type="file"
-                multiple
-                onChange={(event) => onFilesSelected(event.target.files, "file")}
-              />
-              <input
-                ref={folderInputRef}
-                className="hidden"
-                type="file"
-                multiple
-                onChange={(event) => onFilesSelected(event.target.files, "folder")}
-              />
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <button
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
-                  onClick={() => fileInputRef.current?.click()}
-                  type="button"
-                >
-                  <Plus className="size-4" />
-                  Add File
-                </button>
-                <button
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
-                  onClick={() => folderInputRef.current?.click()}
-                  type="button"
-                >
-                  <Plus className="size-4" />
-                  Add Folder
-                </button>
-              </div>
-
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  className={buttonClass}
-                  onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}
-                >
-                  Send Files
-                </button>
-                <button
-                  className={buttonClass}
-                  onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}
-                >
-                  Send Folder
-                </button>
-              </div>
-
-
-              <p className="text-xs text-slate-500">
-                DO NOT Close this tab, if you want to continue transfer.
-              </p>
-
-              <div className="grid gap-3">
-                <TreePanel
-                  title="Uploaded File List"
-                  emptyLabel="No uploaded files or folders "
-                  entries={[...uploadedFiles, ...uploadedFolderFiles]}
-                  onDelete={(path) => {
-                    setUploadedFiles((prev) => prev.filter((f) => !(f.path === path || f.path.startsWith(`${path}/`))));
-                    setUploadedFolderFiles((prev) => prev.filter((f) => !(f.path === path || f.path.startsWith(`${path}/`))));
-                  }}
-                />
-                <TreePanel
-                  title="Received File List"
-                  emptyLabel="No completed received files or folders "
-                  entries={inboxItems
-                    .filter((item) => item.complete)
-                    .map((item) => ({ path: item.name, size: item.size }))}
-                  onDelete={(path) => {
-                    setInboxItems((prev) => prev.filter((item) => !(item.name === path || item.name.startsWith(`${path}/`))));
-                  }}
-                  onDownloadFolder={(path) => {
-                    void downloadInboxFolder(path);
-                  }}
-                />
-              </div>
-
-              <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Sending Transfers</h3>
->>>>>>> parent of 924c96b (design-update29.4)
 
                 <h3 className="text-sm font-semibold pt-4">Active Transfers</h3>
                 {sendingItems.length === 0 ? (
@@ -2588,26 +2044,10 @@ export default function Home() {
                 ) : (
                   <div className="space-y-2">
                     {sendingItems.map((item) => (
-<<<<<<< HEAD
                       <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
                         <div className="flex items-center justify-between gap-2 mb-2">
                           <span className="text-xs font-medium truncate flex-1">{item.name}</span>
                           <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
-=======
-                      <div key={item.id} className="rounded-md p-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <FileItem>{item.name}</FileItem>
-                          <div className="flex items-center gap-2 text-slate-300">
-                            <span>{formatBytes(item.size)}</span>
-                            <button
-                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-                              onClick={() => setSendingItems((prev) => prev.filter((entry) => entry.id !== item.id))}
-                              type="button"
-                            >
-                              <X className="size-3.5" />
-                            </button>
-                          </div>
->>>>>>> parent of 924c96b (design-update29.4)
                         </div>
                         <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
                         <div className="flex justify-between text-xs text-slate-400 mt-1">
@@ -2680,7 +2120,6 @@ export default function Home() {
                 <Button variant={cameraEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleCamera}>{cameraEnabled ? "Cam on" : "Cam Off"}</Button>
               </div>
 
-<<<<<<< HEAD
               {callType === "audio" && (
                 <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-3">
                   <p className="text-xs text-slate-400 mb-2">Voice Activity</p>
@@ -2698,30 +2137,9 @@ export default function Home() {
                       );
                     })}
                   </div>
-=======
-              <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">Received Inbox</h3>
-                  <button
-                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
-                    onClick={downloadAll}
-                    type="button"
-                  >
-                    Download all
-                  </button>
-                  
-                  <button
-                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
-                    onClick={clearInbox}
-                    type="button"
-                  >
-                    Clear Inbox
-                  </button>
->>>>>>> parent of 924c96b (design-update29.4)
                 </div>
               )}
 
-<<<<<<< HEAD
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
                   <p className="text-slate-400 mb-2">Local</p>
@@ -2792,49 +2210,6 @@ export default function Home() {
                       <div className="flex-1 min-w-0">
                         <p className="truncate font-medium">{item.name}</p>
                         <p className="text-slate-500">{formatBytes(item.size)}</p>
-=======
-                {inboxItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No active transfers</p>
-                ) : (
-                  <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
-                    {inboxItems.map((item) => (
-                      <div key={item.id} className="rounded-md p-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <FileItem>{item.name}</FileItem>
-                          <div className="flex items-center gap-2 text-slate-300">
-                            <span>{formatBytes(item.size)}</span>
-                            <button
-                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-                              onClick={() => removeInboxItem(item.id)}
-                              type="button"
-                              title="Remove row"
-                            >
-                              <X className="size-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <Progress
-                            value={Math.min(Math.max(item.progress * 100, 0), 100)}
-                            className="h-2 bg-slate-700 [&_[data-slot=progress-indicator]]:bg-cyan-400"
-                          />
-                        </div>
-                        <p className="mt-1 text-slate-400">{formatBytes(Math.max(item.rate, 0))}/s</p>
-                        <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
-                          {item.complete ? "Transfer complete and ready." : `Receiving... ${Math.round(item.progress * 100)}%`}
-                        </p>
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            aria-disabled={!item.complete}
-                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                            disabled={!item.complete}
-                            onClick={() => downloadInboxFile(item)}
-                            type="button"
-                          >
-                            Download
-                          </button>
-                        </div>
->>>>>>> parent of 924c96b (design-update29.4)
                       </div>
                       {item.complete && (
                         <Button size="sm" variant="secondary" onClick={() => downloadInboxFile(item)} aria-label={`Download ${item.name}`}>↓</Button>
