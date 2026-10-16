@@ -5,11 +5,13 @@ import Peer, { DataConnection, MediaConnection } from "peerjs";
 import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
-import { Files, FileItem, FolderContent, FolderItem, FolderTrigger, SubFiles } from "@/components/animate-ui/components/radix/files";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
+<<<<<<< HEAD
 import { Button } from "@/components/animate-ui/components/radix/button";
+import { Files, FolderTrigger, FolderContent, FileItem } from "@/components/animate-ui/components/radix/files";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
+=======
 import {
   Sidebar,
   SidebarContent,
@@ -24,8 +26,8 @@ import {
   SidebarRail,
   SidebarTrigger,
 } from "@/components/animate-ui/components/radix/sidebar";
+>>>>>>> parent of 924c96b (design-update29.4)
 import { supabase } from "@/lib/supabase";
-import { House, Phone, Folder, Mic, MicOff, Video, VideoOff, Plus, X, Download, UserPlus, LogIn, LogOut, ShieldCheck } from "lucide-react";
 
 
 type LogRow = {
@@ -170,7 +172,13 @@ const formatBytes = (bytes: number): string => {
   return `${scaled.toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
 };
 
+const inputClass =
+  "w-full rounded-xl border border-slate-700 bg-[#030712]/80 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400";
+const buttonClass =
+  "rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400";
+// Deviding file into chunks for easier transfer
 const FILE_CHUNK_SIZE = 64 * 1024;
+// Pause sending when RTC buffering gets slow
 const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
 // Small wait used while the outbound buffer drains
 const BUFFER_CHECK_INTERVAL_MS = 10;
@@ -183,32 +191,6 @@ const formatLatency = (rttMs: number | null): string => {
   return `${Math.round(rttMs)} ms`;
 };
 
-// Color-code diagnostics based on route, latency, and buffer pressure
-const diagnosticsColor = (diagnostics: ConnectionDiagnostics) => {
-  const highBuffer = diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK;
-  const highRtt = diagnostics.rttMs !== null && diagnostics.rttMs > 220;
-
-  if (diagnostics.route === "relay" || highBuffer || highRtt) {
-    return "text-rose-300";
-  }
-
-  if (diagnostics.route === "unknown" || diagnostics.dataChannelState !== "open") {
-    return "text-amber-300";
-  }
-
-  return "text-emerald-300";
-};
-
-// Message sent to log
-type WorkerInboundMessage = {
-  type: "prepare-file";
-  transferId: string;
-  source: "Files" | "Folder";
-  file: File;
-  chunkSize: number;
-};
-
-// Message sent to log
 type WorkerOutboundMessage =
   | {
       type: "prepared-start";
@@ -238,14 +220,6 @@ type WorkerOutboundMessage =
 type TreeEntry = {
   path: string;
   size: number;
-};
-
-type TreeNode = {
-  path: string;
-  name: string;
-  size: number;
-  isFolder: boolean;
-  children: TreeNode[];
 };
 
 const normalizePathParts = (path: string) => path.replaceAll("\\", "/").split("/").filter(Boolean);
@@ -318,181 +292,13 @@ const writeBlobToDirectory = async (
   await writable.close();
 };
 
-const sortTreeNodes = (nodes: TreeNode[]): TreeNode[] =>
-  nodes
-    .sort((left, right) => {
-      if (left.isFolder !== right.isFolder) {
-        return left.isFolder ? -1 : 1;
-      }
 
-      return left.name.localeCompare(right.name);
-    })
-    .map((node) => ({
-      ...node,
-      children: sortTreeNodes(node.children),
-    }));
 
-const buildTreeFromEntries = (entries: TreeEntry[]): TreeNode[] => {
-  const roots: TreeNode[] = [];
 
-  for (const entry of entries) {
-    const parts = normalizePathParts(entry.path);
-    if (parts.length === 0) {
-      continue;
-    }
-
-    let children = roots;
-    let currentPath = "";
-
-    parts.forEach((part, index) => {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const isLeaf = index === parts.length - 1;
-      let node = children.find((child) => child.name === part);
-
-      if (!node) {
-        node = {
-          path: currentPath,
-          name: part,
-          size: isLeaf ? entry.size : 0,
-          isFolder: !isLeaf,
-          children: [],
-        };
-        children.push(node);
-      }
-
-      if (isLeaf) {
-        node.size = entry.size;
-        node.isFolder = false;
-      } else {
-        node.isFolder = true;
-        children = node.children;
-      }
-    });
-  }
-
-  return sortTreeNodes(roots);
-};
-
-function TreeNodeRow({
-  node,
-  onDelete,
-  onDownloadFolder,
-}: {
-  node: TreeNode;
-  onDelete?: (path: string) => void;
-  onDownloadFolder?: (path: string) => void;
-}) {
-  if (node.isFolder) {
-    return (
-      <FolderItem value={node.path}>
-        <div className="flex w-full items-start justify-between gap-2 rounded-lg border border-slate-800/70 bg-[#030712]/80 px-3 py-2">
-          <FolderTrigger className="min-w-0 flex-1 whitespace-normal break-words !text-slate-300 hover:!text-slate-300 focus:!text-slate-300">
-            {node.name}
-          </FolderTrigger>
-          <div className="flex shrink-0 items-center gap-1">
-            {onDownloadFolder && (
-              <button
-                className="rounded p-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
-                onClick={() => onDownloadFolder(node.path)}
-                title="Download folder"
-                type="button"
-              >
-                <Download className="size-3" />
-              </button>
-            )}
-            {onDelete && (
-              <button
-                className="rounded p-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
-                onClick={() => onDelete(node.path)}
-                title="Delete"
-                type="button"
-              >
-                <X className="size-3" />
-              </button>
-            )}
-          </div>
-        </div>
-        <FolderContent>
-          <SubFiles
-            className="ml-3 border-l border-slate-800 pl-3"
-            defaultOpen={node.children.filter((child) => child.isFolder).map((child) => child.path)}
-          >
-            {node.children.map((child) => (
-              <TreeNodeRow
-                key={child.path}
-                node={child}
-                onDelete={onDelete}
-                onDownloadFolder={onDownloadFolder}
-              />
-            ))}
-          </SubFiles>
-        </FolderContent>
-      </FolderItem>
-    );
-  }
-
-  return (
-    <div className="flex w-full items-start justify-between gap-3 rounded-lg border border-slate-800/70 bg-[#030712]/80 px-3 py-2">
-      <FileItem className="min-w-0 flex-1 whitespace-normal break-words">{node.name}</FileItem>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="text-[11px] text-slate-400">{formatBytes(node.size)}</span>
-        {onDelete && (
-          <button
-            className="rounded p-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
-            onClick={() => onDelete(node.path)}
-            title="Delete"
-            type="button"
-          >
-            <X className="size-3" />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TreePanel({
-  title,
-  emptyLabel,
-  entries,
-  onDelete,
-  onDownloadFolder,
-}: {
-  title: string;
-  emptyLabel: string;
-  entries: TreeEntry[];
-  onDelete?: (path: string) => void;
-  onDownloadFolder?: (path: string) => void;
-}) {
-  const tree = useMemo(() => buildTreeFromEntries(entries), [entries]);
-
-  return (
-    <section className="rounded-xl border border-slate-800 bg-[#030712] p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">{title}</h3>
-        <span className="text-[11px] text-slate-500">{entries.length} item(s)</span>
-      </div>
-
-      {tree.length === 0 ? (
-        <p className="text-xs text-slate-400">{emptyLabel}</p>
-      ) : (
-        <Files className="rounded-lg border border-slate-800 bg-[#0a1324] p-2" defaultOpen={tree.filter((node) => node.isFolder).map((node) => node.path)}>
-          {tree.map((node) => (
-            <TreeNodeRow key={node.path} node={node} onDelete={onDelete} onDownloadFolder={onDownloadFolder} />
-          ))}
-        </Files>
-      )}
-    </section>
-  );
-}
 
 export default function Home() {
-  const [panelTab, setPanelTab] = useState<"transfer" | "call">("transfer");
-  const [notifications, setNotifications] = useState({
-    call: false,
-    file: false,
-    connection: false,
-  });
+  const [panelTab, setPanelTab] = useState<"transfer" | "call" | "chat" | "diag" | "settings">("transfer");
+
   // Connection mode and server settings
   const [mode, setMode] = useState<"cloud" | "local">("cloud");
   const [host, setHost] = useState("0.peerjs.com");
@@ -521,7 +327,6 @@ export default function Home() {
   const [uploadedFolderFiles, setUploadedFolderFiles] = useState<TreeEntry[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
-  const [workspaceSplit, setWorkspaceSplit] = useState(64);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authUserId, setAuthUserId] = useState<string | null>(null);
@@ -558,8 +363,7 @@ export default function Home() {
   const transferWorkerRef = useRef<Worker | null>(null);
   const workerQueueRef = useRef<WorkerOutboundMessage[]>([]);
   const workerQueueRunningRef = useRef(false);
-  const workspaceShellRef = useRef<HTMLDivElement | null>(null);
-  const isResizingWorkspaceRef = useRef(false);
+  // Workspace resize logic removed
   const cancelledIncomingTransfersRef = useRef<Set<string>>(new Set());
   const cancelledOutgoingTransfersRef = useRef<Set<string>>(new Set());
   const transferPromisesRef = useRef<
@@ -1082,6 +886,7 @@ export default function Home() {
     triggerBrowserDownload(item.url, item.name.split("/").pop() ?? item.name);
   }, []);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const downloadInboxFolder = useCallback(async (folderPath: string, targetDirectory?: FileSystemDirectoryHandle) => {
     const folderItems = inboxItemsRef.current.filter(
       (item) => item.complete && item.url && item.source === "Folder" && item.name.startsWith(`${folderPath}/`)
@@ -1131,34 +936,23 @@ export default function Home() {
       return;
     }
 
-    const folderRoots = new Set(
-      downloadable
-        .filter((item) => item.source === "Folder" && item.name.includes("/"))
-        .map((item) => normalizePathParts(item.name)[0])
-        .filter((root): root is string => Boolean(root))
-    );
+    pushLog("Creating archive...");
+    const zip = new JSZip();
 
-    let folderTargetDirectory: FileSystemDirectoryHandle | undefined;
-    if (folderRoots.size > 0) {
-      const picker = (window as Window & {
-        showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
-      }).showDirectoryPicker;
-
-      if (picker) {
-        folderTargetDirectory = await picker();
+    try {
+      for (const item of downloadable) {
+        const response = await fetch(item.url);
+        const blob = await response.blob();
+        zip.file(item.name, blob);
       }
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      downloadBlobFile(zipBlob, "myftp-downloads.zip");
+      pushLog(`Created and downloaded myftp-downloads.zip with ${downloadable.length} item(s).`);
+    } catch (error) {
+      pushLog(`Failed to create archive: ${error instanceof Error ? error.message : "Unknown error"}`, true);
     }
-
-    for (const folderRoot of folderRoots) {
-      await downloadInboxFolder(folderRoot, folderTargetDirectory);
-    }
-
-    downloadable
-      .filter((item) => item.source !== "Folder" || !item.name.includes("/"))
-      .forEach((item) => downloadInboxFile(item));
-
-    pushLog(`Downloading ${downloadable.length} received file(s).`);
-  }, [downloadInboxFile, downloadInboxFolder, pushLog]);
+  }, [pushLog]);
 
   // Clear inbox
   const clearInbox = useCallback(() => {
@@ -1186,31 +980,12 @@ export default function Home() {
   }, [pushLog, sendControlMessage]);
 
   // Remove single inbox item and revoke its download URL
-  const removeInboxItem = useCallback((id: string) => {
-    cancelledIncomingTransfersRef.current.add(id);
-    if (activeConnRef.current?.open) {
-      sendControlMessage(activeConnRef.current, {
-        kind: "transfer-cancel",
-        transferId: id,
-      });
-    }
-
-    setInboxItems((prev) => {
-      const target = prev.find((item) => item.id === id);
-      if (target && target.url) {
-        URL.revokeObjectURL(target.url);
-      }
-      activeInboxTransfersRef.current.delete(id);
-      return prev.filter((item) => item.id !== id);
-    });
-  }, [sendControlMessage]);
 
   // Wire the live data-channel listeners for chat, transfer, and close events
   const wireConnection = useCallback(
     (conn: DataConnection) => {
       activeConnRef.current = conn;
       setConnState(`Connected to ${conn.peer}`);
-      setNotifications((prev) => ({ ...prev, connection: true }));
       pushLog(`Connection opened with ${conn.peer}`);
       if (conn.serialization !== "raw") {
         pushLog(
@@ -1235,7 +1010,6 @@ export default function Home() {
           if (control.kind === "transfer-start") {
             const source = control.label === "Folder" ? "Folder" : "Files";
             incomingTransferLabelRef.current = source;
-            setNotifications((prev) => ({ ...prev, file: true }));
             pushLog(`Incoming ${source.toLowerCase()} transfer: ${control.count ?? 0} item(s).`);
             return;
           }
@@ -1411,13 +1185,11 @@ export default function Home() {
       });
 
       peer.on("connection", (conn) => {
-        setNotifications((prev) => ({ ...prev, connection: true }));
         pushLog(`Incoming connection from ${conn.peer}`);
         conn.on("open", () => wireConnection(conn));
       });
 
       peer.on("call", async (call) => {
-        setNotifications((prev) => ({ ...prev, call: true }));
         pushLog(`Incoming call from ${call.peer}`);
         try {
           if (!localStreamRef.current) {
@@ -1555,12 +1327,6 @@ export default function Home() {
         return;
       }
 
-      const worker = transferWorkerRef.current;
-      if (!worker) {
-        pushLog("Transfer worker is not ready . Please retry in a second.", true);
-        return;
-      }
-
       if (activeConnRef.current) {
         sendControlMessage(activeConnRef.current, {
           kind: "transfer-start",
@@ -1573,30 +1339,62 @@ export default function Home() {
         const transferId = `${Date.now()}-${Math.random()}`;
         const mime = file.type || "application/octet-stream";
         const fileName = file.webkitRelativePath || file.name;
+        const totalChunks = Math.max(1, Math.ceil(file.size / FILE_CHUNK_SIZE));
+        const conn = activeConnRef.current;
 
         if (isLikelyCompressed(fileName, mime)) {
           pushLog(`Skipping app-level compression for ${fileName}; file is already compressed or media.`);
         }
 
-        beginOutgoingTransfer(transferId, label, fileName, file.size, Math.ceil(file.size / FILE_CHUNK_SIZE));
-
-        const completion = new Promise<void>((resolve, reject) => {
-          transferPromisesRef.current.set(transferId, { resolve, reject });
-        });
-
-        worker.postMessage({
-          type: "prepare-file",
-          transferId,
-          source: label,
-          file,
-          chunkSize: FILE_CHUNK_SIZE,
-        } satisfies WorkerInboundMessage);
+        beginOutgoingTransfer(transferId, label, fileName, file.size, totalChunks);
 
         try {
-          await completion;
+          if (!conn || !conn.open) {
+            throw new Error("Connection closed during transfer");
+          }
+
+          sendControlMessage(conn, {
+            kind: "file-start",
+            transferId,
+            source: label,
+            name: fileName,
+            mime,
+            size: file.size,
+            totalChunks,
+          });
+
+          for (let index = 0, offset = 0; offset < file.size; index += 1, offset += FILE_CHUNK_SIZE) {
+            if (!conn.open) {
+              throw new Error("Connection closed during transfer");
+            }
+
+            const chunkBlob = file.slice(offset, Math.min(offset + FILE_CHUNK_SIZE, file.size));
+            const data = await chunkBlob.arrayBuffer();
+
+            await waitForBufferedDrain(conn);
+            sendControlMessage(conn, {
+              kind: "file-chunk-meta",
+              transferId,
+              index,
+              size: data.byteLength,
+            });
+            await waitForBufferedDrain(conn);
+            conn.send(data);
+            updateOutgoingTransferProgress(transferId, data.byteLength);
+          }
+
+          await waitForBufferedDrain(conn);
+          sendControlMessage(conn, {
+            kind: "file-end",
+            transferId,
+          });
+
+          flushOutgoingTransfer(transferId);
           pushLog(`Sent ${label.toLowerCase()}: ${fileName} (${formatBytes(file.size)})`);
         } catch (err) {
           pushLog(`Transfer canceled/failed for ${fileName}: ${String(err)}`, true);
+          sendingTransfersRef.current.delete(transferId);
+          setSendingItems((prev) => prev.filter((item) => item.id !== transferId));
         }
       }
 
@@ -1604,10 +1402,13 @@ export default function Home() {
     },
     [
       beginOutgoingTransfer,
+      flushOutgoingTransfer,
       isLikelyCompressed,
       pushLog,
       requireConnection,
       sendControlMessage,
+      updateOutgoingTransferProgress,
+      waitForBufferedDrain,
     ]
   );
 
@@ -1714,6 +1515,16 @@ export default function Home() {
     },
     [pushLog, summarizeSelection]
   );
+
+  // Remove a queued file by index
+  const removeQueuedFile = useCallback((index: number, type: "file" | "folder") => {
+    if (type === "file") {
+      setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+    } else {
+      setUploadedFolderFiles(prev => prev.filter((_, i) => i !== index));
+    }
+    pushLog(`Removed from queue.`);
+  }, [pushLog]);
 
   // Copy peer ID
   const copyPeerId = useCallback(async () => {
@@ -2044,30 +1855,6 @@ export default function Home() {
     cameraEnabledRef.current = cameraEnabled;
   }, [cameraEnabled]);
 
-  useEffect(() => {
-    const handleMouseMove = (event: MouseEvent) => {
-      if (!isResizingWorkspaceRef.current || !workspaceShellRef.current) {
-        return;
-      }
-
-      const bounds = workspaceShellRef.current.getBoundingClientRect();
-      const nextSplit = ((event.clientX - bounds.left) / bounds.width) * 100;
-      setWorkspaceSplit(Math.min(75, Math.max(40, nextSplit)));
-    };
-
-    const stopResize = () => {
-      isResizingWorkspaceRef.current = false;
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", stopResize);
-
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", stopResize);
-    };
-  }, []);
-
   // Render audio meter
   useEffect(() => {
     const stream = localStreamRef.current;
@@ -2117,77 +1904,120 @@ export default function Home() {
   }, [callType, stopAudioMeter, streamVersion]);
 
   return (
-    <SidebarProvider defaultOpen>
-      <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
-        <SpeedInsights />
-        <Sidebar
-          className="border-r border-slate-800 bg-[#020617]"
-          collapsible="icon"
-          containerClassName="bg-[#020617]"
-          variant="sidebar"
-        >
-          <SidebarContent>
-            <div className="flex items-center justify-end px-2 pt-2">
-              <SidebarTrigger className="text-slate-300 hover:bg-slate-800 hover:text-slate-100" />
+    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100 flex flex-col">
+      <SpeedInsights />
+      
+      {/* Top bar */}
+      <div className="border-b border-slate-800 bg-[#020617]/80 backdrop-blur px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold tracking-tight">My<span className="text-cyan-500">FTP</span></h1>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900/50 text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span className="font-mono font-semibold">{myId}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button variant="outline" size="sm" onClick={copyPeerId} aria-label="Copy peer ID">Copy ID</Button>
+          <Button variant="outline" size="sm" onClick={copyShareLink} aria-label="Copy share link">Share</Button>
+          <Button variant="outline" size="sm" onClick={() => makePeer(true)} aria-label="Generate new ID">New ID</Button>
+          <Button variant="destructive" size="sm" onClick={() => makePeer()} aria-label="Reconnect">Reconnect</Button>
+        </div>
+      </div>
+
+      {/* Three-column main layout */}
+      <div className="flex-1 overflow-hidden grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-0 bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827]">
+        
+        {/* Left column: Peer connection & account */}
+        <div className="border-r border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 h-full">
+          <div className="p-4 space-y-6">
+            {/* Connect to peer section */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Connect</h2>
+              <Input
+                aria-label="Target peer ID"
+                placeholder="Enter peer ID…"
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (connState === "Not connected") connectToTarget();
+                    else disconnectFromTarget();
+                  }
+                }}
+              />
+              <Input
+                aria-label="Display name"
+                placeholder="Name (optional)"
+                value={sender}
+                onChange={(e) => setSender(e.target.value)}
+              />
+              <Button
+                variant="default"
+                className="w-full"
+                onClick={() => {
+                  if (connState === "Not connected") connectToTarget();
+                  else disconnectFromTarget();
+                }}
+                aria-label={connState === "Not connected" ? "Connect" : "Disconnect"}
+              >
+                {connState === "Not connected" ? "Connect" : "Disconnect"}
+              </Button>
+              <div className="text-xs text-slate-400">
+                Status: <span className="font-mono font-semibold text-slate-100">{connState}</span>
+              </div>
             </div>
 
-            <SidebarGroup>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton className="text-slate-200" isActive>
-                    <House className="size-4" />
-                    <span>Home</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroup>
+            <div className="h-px bg-slate-700"></div>
 
+<<<<<<< HEAD
+            {/* Trusted peers section */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Trusted Peers</h2>
+              {trustedPeers.length === 0 ? (
+                <p className="text-xs text-slate-500 italic">No trusted peers saved yet.</p>
+              ) : (
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {trustedPeers.map((peerId) => (
+                    <div key={peerId} className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-700 bg-slate-800/30 hover:bg-slate-800/60 transition text-xs">
+                      <span className="font-mono text-slate-300 truncate flex-1">{peerId}</span>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+=======
             <SidebarGroup>
               <SidebarGroupLabel className="text-slate-400">Account</SidebarGroupLabel>
               <div className="space-y-2 px-2 pb-2">
-                <div>
-                  <label htmlFor="email-input" className="text-xs font-medium text-slate-400 block mb-1">
-                    Email
-                  </label>
-                  <Input
-                    id="email-input"
-                    aria-label="Account email"
-                    onChange={(event) => setAuthEmail(event.target.value)}
-                    placeholder="Email address"
-                    type="email"
-                    value={authEmail}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="password-input" className="text-xs font-medium text-slate-400 block mb-1">
-                    Password
-                  </label>
-                  <Input
-                    id="password-input"
-                    aria-label="Account password"
-                    onChange={(event) => setAuthPassword(event.target.value)}
-                    placeholder="Password"
-                    type="password"
-                    value={authPassword}
-                  />
-                </div>
-                <Button onClick={signUpAccount} variant="default" size="md" className="w-full">
-                  <UserPlus className="mr-2 size-4" />
+                <input
+                  className={inputClass}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  placeholder="Account email"
+                  type="email"
+                  value={authEmail}
+                />
+                <input
+                  className={inputClass}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  placeholder="Account password"
+                  type="password"
+                  value={authPassword}
+                />
+                <button className={buttonClass} onClick={signUpAccount} type="button">
+                  <UserPlus className="mr-2 inline size-4" />
                   Sign Up
-                </Button>
-                <Button onClick={signInAccount} variant="default" size="md" className="w-full">
-                  <LogIn className="mr-2 size-4" />
+                </button>
+                <button className={buttonClass} onClick={signInAccount} type="button">
+                  <LogIn className="mr-2 inline size-4" />
                   Sign In
-                </Button>
-                <Button
+                </button>
+                <button
+                  className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
                   onClick={signOutAccount}
-                  variant="outline"
-                  size="md"
-                  className="w-full"
+                  type="button"
                 >
-                  <LogOut className="mr-2 size-4" />
+                  <LogOut className="mr-2 inline size-4" />
                   Sign Out
-                </Button>
+                </button>
                 <p className="text-xs text-slate-300">
                   {authUserId ? `Signed in (${authUserId.slice(0, 8)}...)` : "Not signed in"}
                 </p>
@@ -2203,19 +2033,63 @@ export default function Home() {
                   trustedPeers.map((peerId) => (
                     <div key={peerId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 bg-[#030712] px-2 py-2">
                       <span className="truncate font-mono text-xs text-slate-200">{peerId}</span>
-                      <Button
-                        variant="secondary"
-                        size="sm"
+                      <button
+                        className="rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+>>>>>>> parent of 924c96b (design-update29.4)
                         onClick={() => {
                           setTargetId(peerId);
-                          setPanelTab("transfer");
                           window.setTimeout(() => connectToTarget(), 0);
                         }}
-                        aria-label={`Reconnect to peer ${peerId}`}
+<<<<<<< HEAD
+                        aria-label={`Connect to ${peerId}`}
                       >
-                        <ShieldCheck className="mr-1 size-3" />
-                        Reconnect
+                        Go
                       </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-full"
+                onClick={saveTrustedConnection}
+                aria-label="Save as trusted"
+              >
+                Save Current
+              </Button>
+            </div>
+
+            <div className="h-px bg-slate-700"></div>
+
+            {/* Account section */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Account</h2>
+              <Input
+                id="email-input"
+                aria-label="Email"
+                placeholder="Email"
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+              />
+              <Input
+                id="password-input"
+                aria-label="Password"
+                placeholder="Password"
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="default" size="sm" onClick={signUpAccount}>Sign Up</Button>
+                <Button variant="default" size="sm" onClick={signInAccount}>Sign In</Button>
+=======
+                        type="button"
+                      >
+                        <ShieldCheck className="mr-1 inline size-3" />
+                        Reconnect
+                      </button>
                     </div>
                   ))
                 )}
@@ -2223,14 +2097,14 @@ export default function Home() {
             </SidebarGroup>
           </SidebarContent>
           <SidebarFooter className="p-2">
-            <Button
-              variant="outline"
+            <div
+              className="mb-2 rounded-lg border border-slate-700 bg-[#0b1220] p-2 text-xs text-slate-300"
               onClick={() => setNotifications({ call: false, file: false, connection: false })}
-              className="w-full"
-              aria-label="Clear notifications"
+              role="button"
+              tabIndex={0}
             >
               {(notifications.call || notifications.file || notifications.connection) ? "New activity" : "No new notifications"}
-            </Button>
+            </div>
           </SidebarFooter>
           <SidebarRail />
         </Sidebar>
@@ -2255,38 +2129,32 @@ export default function Home() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection Settings</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <div>
-                  <label htmlFor="mode-select" className="text-xs font-medium text-slate-400 block mb-1">
-                    Mode
-                  </label>
-                  <Select value={mode} onValueChange={(nextMode) => {
-                    const m = nextMode as "cloud" | "local";
-                    setMode(m);
-                    applyModeDefaults(m);
-                  }}>
-                    <SelectTrigger id="mode-select" aria-label="Server mode">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="cloud">Cloud</SelectItem>
-                      <SelectItem value="local">Local server</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Input
-                  aria-label="Host address"
+                <select
+                  className={inputClass}
+                  value={mode}
+                  onChange={(e) => {
+                    const nextMode = e.target.value as "cloud" | "local";
+                    setMode(nextMode);
+                    applyModeDefaults(nextMode);
+                  }}
+                >
+                  <option value="cloud">Cloud</option>
+                  <option value="local">Local server</option>
+                </select>
+                <input
+                  className={inputClass}
                   placeholder="Host"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
                 />
-                <Input
-                  aria-label="Port number"
+                <input
+                  className={inputClass}
                   placeholder="Port"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
                 />
-                <Input
-                  aria-label="API path"
+                <input
+                  className={inputClass}
                   placeholder="Path"
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
@@ -2294,57 +2162,52 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-[140px_minmax(0,1fr)_120px_120px]">
-                <Input
-                  aria-label="Use secure connection"
+                <input
+                  className={inputClass}
                   placeholder="Secure: true/false"
                   value={secure}
                   onChange={(e) => setSecure(e.target.value)}
                 />
-                <Button variant="default" onClick={() => makePeer()}>
+                <button className={buttonClass} onClick={() => makePeer()}>
                   Reconnect Peer
-                </Button>
-                <Button
-                  variant="outline"
+                </button>
+                <button
+                  className="rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
                   onClick={() => makePeer(true)}
-                  aria-label="Generate a new peer ID"
+                  type="button"
                 >
                   Generate New ID
-                </Button>
+                </button>
               </div>
 
               <p className="text-xs text-slate-400">{modeHint}</p>
 
-              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300 flex items-center justify-between gap-2">
+              <div className="rounded-full border border-slate-700 bg-[#030712]/60 px-3 py-2 text-xs text-slate-300">
                 <strong className="text-slate-100">Peer ID:</strong>
-                <Button
-                  variant="ghost"
-                  size="sm"
+                <button
+                  className="ml-2 rounded-full border border-cyan-500/40 bg-cyan-500/20 px-2 py-1 font-mono text-xs text-cyan-200 hover:bg-cyan-500/30"
                   onClick={copyPeerId}
-                  aria-label={`Copy peer ID ${myId} to clipboard`}
-                  className="font-mono text-xs"
                   title="Click to copy"
                 >
                   {myId}
-                </Button>
+                </button>
               </div>
 
-              <Button
-                variant="outline"
+              <button
+                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
                 onClick={copyShareLink}
-                className="w-full"
-                aria-label="Copy share link to clipboard"
+                type="button"
               >
                 Share link
-              </Button>
+              </button>
 
-              <Button
-                variant="secondary"
+              <button
+                className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
                 onClick={saveTrustedConnection}
-                className="w-full"
-                aria-label="Save current peer as trusted connection"
+                type="button"
               >
                 Save as Trusted Connection
-              </Button>
+              </button>
             </section>
 
             {/* Show current connection state, connect/disconnect, and live route stats */}
@@ -2352,8 +2215,8 @@ export default function Home() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Connection</h2>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                <Input
-                  aria-label="Target peer ID"
+                <input
+                  className={inputClass}
                   placeholder="Enter target peer ID"
                   value={targetId}
                   onChange={(e) => setTargetId(e.target.value)}
@@ -2368,8 +2231,12 @@ export default function Home() {
                     }
                   }}
                 />
-                <Button
-                  variant={connState === "Not connected" ? "default" : "destructive"}
+                <button
+                  className={
+                    connState === "Not connected"
+                      ? buttonClass
+                      : "rounded-xl border border-rose-500/50 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
+                  }
                   onClick={() => {
                     if (connState === "Not connected") {
                       connectToTarget();
@@ -2377,14 +2244,13 @@ export default function Home() {
                       disconnectFromTarget();
                     }
                   }}
-                  aria-label={connState === "Not connected" ? "Connect to peer" : "Disconnect from peer"}
                 >
                   {connState === "Not connected" ? "Connect" : "Disconnect"}
-                </Button>
+                </button>
               </div>
 
-              <Input
-                aria-label="Display name (optional)"
+              <input
+                className={inputClass}
                 placeholder="Name (optional)"
                 value={sender}
                 onChange={(e) => setSender(e.target.value)}
@@ -2395,17 +2261,15 @@ export default function Home() {
                 }}
               />
 
-              <Button
-                variant="outline"
-                className="w-full"
+              <button
+                className="w-full rounded-xl border border-slate-700 bg-[#030712] px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-[#111827]"
                 onClick={() => {
                   setLogs([]);
                   pushLog("Cleared!");
                 }}
-                aria-label="Clear chat and log history"
               >
                 Clear chat and log
-              </Button>
+              </button>
 
               <p className="text-sm text-slate-300">
                 Connection: <strong className="text-slate-100">{connState}</strong>
@@ -2443,16 +2307,21 @@ export default function Home() {
                 <p className={`font-mono ${diagnosticsColor(diagnostics)}`}>
                   Route.............: {diagnostics.route === "unknown" ? "Unknown" : diagnostics.route === "relay" ? "Relay" : "Direct"}
                 </p>
+>>>>>>> parent of 924c96b (design-update29.4)
               </div>
-            </section>
+              <Button variant="outline" size="sm" className="w-full" onClick={signOutAccount}>Sign Out</Button>
+              <p className="text-xs text-slate-400">{authUserId ? `Signed in: ${authUserId.slice(0, 8)}...` : "Not signed in"}</p>
+            </div>
           </div>
+<<<<<<< HEAD
+=======
 
           {/* Event log for sent messages, received messages, and transfer updates */}
           <section className="mt-4 rounded-xl border border-slate-800 bg-[#0a1324]/70 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Chat and Log</h2>
             <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <Input
-                aria-label="Message to send"
+              <input
+                className={inputClass}
                 placeholder="Type message"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
@@ -2463,36 +2332,36 @@ export default function Home() {
                   }
                 }}
               />
-              <Button
-                variant="secondary"
+              <button
+                className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
                 onClick={sendCurrentMessage}
-                aria-label="Send message"
               >
                 Send
-              </Button>
+              </button>
             </div>
             <div
               ref={logContainerRef}
               className="mt-3 max-h-72 min-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-[#030712] p-3 font-mono text-xs"
-              role="log"
-              aria-live="polite"
-              aria-label="Chat and event log"
             >
               {logs.map((row) => {
                 let textClass = "text-slate-200";
 
+                // Error logs = red
                 if (row.error) {
                   textClass = "text-rose-400";
                 }
+                // Received messages = blue
                 else if (row.text.includes("Received:")) {
                   textClass = "text-[#0069d1]";
                 }
+                // Sent messages = dark cyan
                 else if(row.text.includes("Sent:")){
                   textClass = "text-[#0096ad]"
                 }
                 else if(row.text.includes("Incoming") || row.text.includes("Received")){
                   textClass = "text-[#00ad4e]"
                 }
+                // All remaining chat/log rows keep the default text color (it's white)
 
                 return (
                   <div key={row.id} className={textClass}>
@@ -2513,63 +2382,80 @@ export default function Home() {
           role="separator"
         >
           <div className="w-px rounded-full bg-slate-700 transition hover:bg-cyan-400" />
+>>>>>>> parent of 924c96b (design-update29.4)
         </div>
 
-        {/* Right-side workspace for calls, media previews, and file transfer tools */}
-        <main
-          className="space-y-4 rounded-2xl border border-slate-800 bg-[#0f0f0f] p-3 lg:rounded-l-none"
-          style={{ width: "100%", flexBasis: `${100 - workspaceSplit}%` }}
-        >
-          <h1 className="text-2xl font-bold tracking-tight">Extra Functions</h1>
-
-          <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call") }>
-            <TabsList>
-              <TabsTrigger value="transfer">
-                <Folder className="mr-2 size-4" />
-                Transfer
-              </TabsTrigger>
-              <TabsTrigger value="call">
-                <Phone className="mr-2 size-4" />
-                Call
-              </TabsTrigger>
+        {/* Center column: Tabbed interface */}
+        <div className="border-r border-slate-800 bg-[#0a0f1f] overflow-hidden flex flex-col sm:col-span-2 lg:col-span-2">
+          <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call" | "chat" | "diag" | "settings")} className="flex flex-col h-full">
+            <TabsList className="border-b border-slate-700 px-4 flex gap-1 bg-slate-900/30 overflow-x-auto rounded-none">
+              <TabsTrigger value="transfer" className="text-xs whitespace-nowrap">Files</TabsTrigger>
+              <TabsTrigger value="chat" className="text-xs whitespace-nowrap">Chat</TabsTrigger>
+              <TabsTrigger value="call" className="text-xs whitespace-nowrap">Calls</TabsTrigger>
+              <TabsTrigger value="diag" className="text-xs whitespace-nowrap">Logs</TabsTrigger>
+              <TabsTrigger value="settings" className="text-xs whitespace-nowrap">Settings</TabsTrigger>
             </TabsList>
 
+<<<<<<< HEAD
+            {/* Transfer/Files tab */}
+            <TabsContent value="transfer" className="flex-1 overflow-y-auto p-4">
+              <div className="space-y-4">
+                {/* Quick actions */}
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} aria-label="Add files">Add Files</Button>
+                  <Button variant="secondary" size="sm" onClick={() => folderInputRef.current?.click()} aria-label="Add folder">Add Folder</Button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="default" size="sm" onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}>Send Files</Button>
+                  <Button variant="default" size="sm" onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}>Send Folder</Button>
+                </div>
+=======
           {/* Call controls plus local and remote video panes */}
           <TabsContent value="call">
           <section className="rounded-xl border border-slate-800 bg-[#0e182b]/75 p-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Calls</h2>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <Button variant="default" onClick={() => startCall("audio")} aria-label="Start audio call">
+              <button className={buttonClass} onClick={() => startCall("audio")}>
                 Audio Call
-              </Button>
-              <Button variant="default" onClick={() => startCall("video")} aria-label="Start video call">
+              </button>
+              <button className={buttonClass} onClick={() => startCall("video")}>
                 Video Call
-              </Button>
+              </button>
             </div>
 
             <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <Button
-                variant="destructive"
+              <button
+                className="rounded-xl border border-rose-500/50 bg-rose-500/15 px-3 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/25"
                 onClick={endCall}
-                aria-label="End current call"
+                type="button"
               >
                 End Call
-              </Button>
-              <Button
-                variant={micEnabled ? "secondary" : "destructive"}
+              </button>
+              <button
+                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                  micEnabled
+                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                }`}
                 onClick={toggleMic}
-                aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
+                type="button"
+                title={micEnabled ? "Mute microphone" : "Unmute microphone"}
               >
                 {micEnabled ? <Mic className="size-4" /> : <MicOff className="size-4" />}
-              </Button>
-              <Button
-                variant={cameraEnabled ? "secondary" : "destructive"}
+              </button>
+              <button
+                className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                  cameraEnabled
+                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                    : "border-rose-500/50 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                }`}
                 onClick={toggleCamera}
-                aria-label={cameraEnabled ? "Turn off camera" : "Turn on camera"}
+                type="button"
+                title={cameraEnabled ? "Disable camera" : "Enable camera"}
               >
                 {cameraEnabled ? <Video className="size-4" /> : <VideoOff className="size-4" />}
-              </Button>
+              </button>
             </div>
 
             {callType === "audio" && (
@@ -2585,7 +2471,6 @@ export default function Home() {
                         key={`wave-${index}`}
                         className="w-1.5 rounded-sm bg-cyan-400/85 transition-all duration-100"
                         style={{ height }}
-                        aria-hidden="true"
                       />
                     );
                   })}
@@ -2596,11 +2481,11 @@ export default function Home() {
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
                 <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Send</h3>
-                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" aria-label="Local video preview" />
+                <video ref={localVideoRef} autoPlay playsInline muted className="min-h-32 w-full rounded-lg bg-[#030712]" />
               </div>
               <div className="rounded-lg border border-slate-700 bg-[#030712] p-2">
                 <h3 className="mb-2 text-xs uppercase tracking-wide text-slate-400">Receive</h3>
-                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" aria-label="Remote video stream" />
+                <video ref={remoteVideoRef} autoPlay playsInline className="min-h-32 w-full rounded-lg bg-[#030712]" />
               </div>
             </div>
 
@@ -2629,39 +2514,38 @@ export default function Home() {
               />
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <Button
-                  variant="secondary"
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
                   onClick={() => fileInputRef.current?.click()}
-                  aria-label="Select files to upload"
+                  type="button"
                 >
                   <Plus className="size-4" />
                   Add File
-                </Button>
-                <Button
-                  variant="secondary"
+                </button>
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
                   onClick={() => folderInputRef.current?.click()}
-                  aria-label="Select folder to upload"
+                  type="button"
                 >
                   <Plus className="size-4" />
                   Add Folder
-                </Button>
+                </button>
               </div>
 
+
               <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="default"
+                <button
+                  className={buttonClass}
                   onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}
-                  aria-label="Send selected files"
                 >
                   Send Files
-                </Button>
-                <Button
-                  variant="default"
+                </button>
+                <button
+                  className={buttonClass}
                   onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}
-                  aria-label="Send selected folder"
                 >
                   Send Folder
-                </Button>
+                </button>
               </div>
 
 
@@ -2696,68 +2580,219 @@ export default function Home() {
 
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Sending Transfers</h3>
+>>>>>>> parent of 924c96b (design-update29.4)
 
+                <h3 className="text-sm font-semibold pt-4">Active Transfers</h3>
                 {sendingItems.length === 0 ? (
-                  <p className="text-xs text-slate-400">No active transfers</p>
+                  <p className="text-xs text-slate-500">No active transfers</p>
                 ) : (
-                  <Files className="rounded-lg border border-slate-800 bg-[#0a1324]">
+                  <div className="space-y-2">
                     {sendingItems.map((item) => (
+<<<<<<< HEAD
+                      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span className="text-xs font-medium truncate flex-1">{item.name}</span>
+                          <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
+=======
                       <div key={item.id} className="rounded-md p-2 text-xs">
                         <div className="flex items-center justify-between gap-2">
                           <FileItem>{item.name}</FileItem>
                           <div className="flex items-center gap-2 text-slate-300">
                             <span>{formatBytes(item.size)}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
+                            <button
+                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
                               onClick={() => setSendingItems((prev) => prev.filter((entry) => entry.id !== item.id))}
-                              aria-label={`Remove ${item.name} from transfers`}
+                              type="button"
                             >
                               <X className="size-3.5" />
-                            </Button>
+                            </button>
                           </div>
+>>>>>>> parent of 924c96b (design-update29.4)
                         </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <Progress
-                            value={Math.min(Math.max(item.progress * 100, 0), 100)}
-                            className="h-2 bg-slate-700 [&_[data-slot=progress-indicator]]:bg-cyan-400"
-                          />
+                        <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
+                        <div className="flex justify-between text-xs text-slate-400 mt-1">
+                          <span>{item.complete ? "Done" : `${Math.round(item.progress * 100)}%`}</span>
+                          <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
                         </div>
-                        <p className="mt-1 text-slate-400">
-                          {formatBytes(Math.max(item.rate, 0))}/s
-                        </p>
-                        <p className={item.complete ? "mt-2 text-emerald-300" : "mt-2 text-slate-400"}>
-                          {item.complete ? "Transfer complete." : `Sending... ${Math.round(item.progress * 100)}%`}
-                        </p>
                       </div>
                     ))}
-                  </Files>
+                  </div>
                 )}
+
+                <h3 className="text-sm font-semibold pt-4">Received Files</h3>
+                {inboxItems.length === 0 ? (
+                  <p className="text-xs text-slate-500">No received files</p>
+                ) : (
+                  <div className="space-y-2">
+                    {inboxItems.map((item) => (
+                      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span className="text-xs font-medium truncate flex-1">{item.name}</span>
+                          <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
+                        </div>
+                        <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
+                        <div className="flex justify-between text-xs text-slate-400 mt-1">
+                          <span>{item.complete ? "Ready" : `${Math.round(item.progress * 100)}%`}</span>
+                          <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-xs text-slate-500 pt-2">DO NOT close this tab during transfers</p>
+              </div>
+            </TabsContent>
+
+            {/* Chat tab */}
+            <TabsContent value="chat" className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs" ref={logContainerRef} role="log" aria-live="polite">
+                {logs.filter(row => row.text.includes("Sent:") || row.text.includes("Received:")).slice(-50).map((row) => (
+                  <div key={row.id} className="bg-slate-800/30 border border-slate-700 rounded p-2">
+                    <div className="text-slate-400 font-mono text-xs">
+                      {row.text.includes("Sent:") ? "You" : "Peer"}: {row.text.replace(/^.*?Sent:|^.*?Received:/, "").trim()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-slate-700 p-3 bg-slate-900/30 flex gap-2">
+                <Input
+                  aria-label="Message"
+                  placeholder="Type message…"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") sendCurrentMessage(); }}
+                  className="flex-1 text-xs"
+                />
+                <Button variant="secondary" size="sm" onClick={sendCurrentMessage}>Send</Button>
+              </div>
+            </TabsContent>
+
+            {/* Calls tab */}
+            <TabsContent value="call" className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="default" onClick={() => startCall("audio")} aria-label="Audio call">Audio</Button>
+                <Button variant="default" onClick={() => startCall("video")} aria-label="Video call">Video</Button>
+              </div>
+              <Button variant="destructive" className="w-full" onClick={endCall}>End Call</Button>
+              <div className="flex gap-2">
+                <Button variant={micEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleMic}>{micEnabled ? "Mic On" : "Mic Off"}</Button>
+                <Button variant={cameraEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleCamera}>{cameraEnabled ? "Cam on" : "Cam Off"}</Button>
               </div>
 
+<<<<<<< HEAD
+              {callType === "audio" && (
+                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-3">
+                  <p className="text-xs text-slate-400 mb-2">Voice Activity</p>
+                  <div className="flex h-12 items-end gap-1">
+                    {Array.from({ length: 18 }).map((_, i) => {
+                      const wave = Math.min(1, audioLevel + ((i % 3) + 1) * 0.08);
+                      const height = 4 + Math.round(wave * 32);
+                      return (
+                        <span
+                          key={`wave-${i}`}
+                          className="w-1 rounded-sm bg-cyan-400/85"
+                          style={{ height }}
+                          aria-hidden="true"
+                        />
+                      );
+                    })}
+                  </div>
+=======
               <div className="mt-2 rounded-lg border border-slate-700 bg-[#030712] p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">Received Inbox</h3>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={downloadAll}
-                      aria-label="Download all items from inbox"
-                    >
-                      Download all
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={clearInbox}
-                      aria-label="Clear all items from inbox"
-                    >
-                      Clear Inbox
-                    </Button>
-                  </div>
+                  <button
+                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
+                    onClick={downloadAll}
+                    type="button"
+                  >
+                    Download all
+                  </button>
+                  
+                  <button
+                    className="rounded-lg border border-slate-600 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-[#111827]"
+                    onClick={clearInbox}
+                    type="button"
+                  >
+                    Clear Inbox
+                  </button>
+>>>>>>> parent of 924c96b (design-update29.4)
                 </div>
+              )}
 
+<<<<<<< HEAD
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                  <p className="text-slate-400 mb-2">Local</p>
+                  <video ref={localVideoRef} autoPlay playsInline muted className="w-full rounded h-24 bg-slate-900" aria-label="Local video" />
+                </div>
+                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
+                  <p className="text-slate-400 mb-2">Remote</p>
+                  <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded h-24 bg-slate-900" aria-label="Remote video" />
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* Logs tab */}
+            <TabsContent value="diag" className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs font-mono" ref={logContainerRef} role="log" aria-live="polite">
+                {logs.slice(-50).map((row) => (
+                  <div key={row.id} className={row.error ? "text-rose-400" : row.text.includes("Sent:") ? "text-cyan-400" : "text-slate-300"}>
+                    {row.text}
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-slate-700 p-3 bg-slate-900/30">
+                <Button variant="outline" size="sm" className="w-full" onClick={() => { setLogs([]); pushLog("Chat cleared."); }}>Clear Logs</Button>
+              </div>
+            </TabsContent>
+
+            {/* Settings tab */}
+            <TabsContent value="settings" className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div>
+                <label htmlFor="mode-select" className="text-xs font-medium text-slate-400 block mb-2">Peer Server</label>
+                <Select value={mode} onValueChange={(m) => {
+                  setMode(m as "cloud" | "local");
+                  applyModeDefaults(m as "cloud" | "local");
+                }}>
+                  <SelectTrigger id="mode-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cloud">Cloud (PeerJS)</SelectItem>
+                    <SelectItem value="local">Local server</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Input aria-label="Host" placeholder="Host" value={host} onChange={(e) => setHost(e.target.value)} />
+              <Input aria-label="Port" placeholder="Port" value={port} onChange={(e) => setPort(e.target.value)} />
+              <Input aria-label="Path" placeholder="Path" value={path} onChange={(e) => setPath(e.target.value)} />
+              <Input aria-label="Secure" placeholder="Secure (true/false)" value={secure} onChange={(e) => setSecure(e.target.value)} />
+              <p className="text-xs text-slate-500">{modeHint}</p>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        {/* Right column: File downloads & transfer queue */}
+        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 lg:col-span-1 h-full">
+          <div className="p-4 space-y-6">
+            {/* Received inbox */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Downloads</h2>
+                <span className="text-xs text-slate-500 bg-slate-800/50 px-2 py-1 rounded">{inboxItems.filter(i => i.complete).length}</span>
+              </div>
+              {inboxItems.length === 0 ? (
+                <p className="text-xs text-slate-500">No items</p>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {inboxItems.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-700 bg-slate-800/30 text-xs">
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium">{item.name}</p>
+                        <p className="text-slate-500">{formatBytes(item.size)}</p>
+=======
                 {inboxItems.length === 0 ? (
                   <p className="text-xs text-slate-400">No active transfers</p>
                 ) : (
@@ -2768,14 +2803,14 @@ export default function Home() {
                           <FileItem>{item.name}</FileItem>
                           <div className="flex items-center gap-2 text-slate-300">
                             <span>{formatBytes(item.size)}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
+                            <button
+                              className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
                               onClick={() => removeInboxItem(item.id)}
-                              aria-label={`Remove ${item.name} from inbox`}
+                              type="button"
+                              title="Remove row"
                             >
                               <X className="size-3.5" />
-                            </Button>
+                            </button>
                           </div>
                         </div>
                         <div className="mt-2 flex items-center gap-2">
@@ -2789,29 +2824,114 @@ export default function Home() {
                           {item.complete ? "Transfer complete and ready." : `Receiving... ${Math.round(item.progress * 100)}%`}
                         </p>
                         <div className="mt-2 flex gap-2">
-                          <Button
-                            variant="secondary"
+                          <button
+                            aria-disabled={!item.complete}
+                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                             disabled={!item.complete}
                             onClick={() => downloadInboxFile(item)}
-                            aria-label={`Download ${item.name}`}
+                            type="button"
                           >
                             Download
-                          </Button>
+                          </button>
                         </div>
+>>>>>>> parent of 924c96b (design-update29.4)
                       </div>
-                    ))}
-                  </Files>
-                )}
+                      {item.complete && (
+                        <Button size="sm" variant="secondary" onClick={() => downloadInboxFile(item)} aria-label={`Download ${item.name}`}>↓</Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <Button variant="outline" size="sm" className="flex-1" onClick={downloadAll}>All</Button>
+                <Button variant="outline" size="sm" className="flex-1" onClick={clearInbox}>Clear</Button>
               </div>
             </div>
-          </section>
-          </TabsContent>
-          </Tabs>
-        </main>
+
+            <div className="h-px bg-slate-700"></div>
+
+            {/* Upload queue with file tree */}
+            <div className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Queue</h2>
+              {uploadedFiles.length + uploadedFolderFiles.length === 0 ? (
+                <p className="text-xs text-slate-500">No files queued</p>
+              ) : (
+                <div className="bg-slate-800/30 border border-slate-700 rounded-lg overflow-hidden">
+                  <Files className="text-xs">
+                    {uploadedFiles.length > 0 && (
+                      <div>
+                        <FolderTrigger>Files</FolderTrigger>
+                        <FolderContent>
+                          {uploadedFiles.map((file, idx) => (
+                            <div key={`file-${idx}`} className="flex items-center justify-between gap-1">
+                              <FileItem>{file.path}</FileItem>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => removeQueuedFile(idx, "file")}
+                                className="h-5 px-1 text-xs"
+                                aria-label={`Remove ${file.path}`}
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          ))}
+                        </FolderContent>
+                      </div>
+                    )}
+                    {uploadedFolderFiles.length > 0 && (
+                      <div>
+                        <FolderTrigger>Folder</FolderTrigger>
+                        <FolderContent>
+                          {uploadedFolderFiles.map((file, idx) => (
+                            <div key={`folder-${idx}`} className="flex items-center justify-between gap-1">
+                              <FileItem>{file.path}</FileItem>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => removeQueuedFile(idx, "folder")}
+                                className="h-5 px-1 text-xs"
+                                aria-label={`Remove ${file.path}`}
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          ))}
+                        </FolderContent>
+                      </div>
+                    )}
+                  </Files>
+                  <p className="text-xs text-slate-400 p-2 border-t border-slate-700 mt-2">Use Files tab to send</p>
+                </div>
+              )}
+            </div>
+
+            <div className="h-px bg-slate-700"></div>
+
+            {/* Server info & diagnostics */}
+            <div className="space-y-3 text-xs">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Info</h2>
+              <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-1 font-mono text-slate-400">
+                <p>Status: <span className="text-emerald-400 font-semibold">Active</span></p>
+                <p>Mode: <span className="text-cyan-400 font-semibold">{mode === "cloud" ? "Cloud" : "Local"}</span></p>
+                <p className="text-slate-500 text-xs mt-2">Keep tab open during transfers</p>
+              </div>
+              <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-2 font-mono text-xs">
+                <p className="text-slate-400 font-semibold mb-2">Diagnostics</p>
+                <div className="flex justify-between"><span className="text-slate-400">Channel</span><span className={diagnostics.dataChannelState === "open" ? "text-emerald-400" : "text-amber-400"}>{diagnostics.dataChannelState}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Buffered</span><span className={diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-400" : "text-emerald-400"}>{formatBytes(diagnostics.bufferedAmount)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Ping (RTT)</span><span className={diagnostics.rttMs === null ? "text-amber-400" : diagnostics.rttMs > 220 ? "text-rose-400" : "text-emerald-400"}>{formatLatency(diagnostics.rttMs)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Route</span><span className="text-slate-500">{diagnostics.route}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* Hidden file inputs */}
+      <input ref={fileInputRef} className="hidden" type="file" multiple onChange={(e) => onFilesSelected(e.target.files, "file")} />
+      <input ref={folderInputRef} className="hidden" type="file" multiple onChange={(e) => onFilesSelected(e.target.files, "folder")} />
     </div>
-        </SidebarInset>
-      </div>
-    </SidebarProvider>
   );
 }

@@ -11,6 +11,9 @@ pnpm dev
 bun dev
 ```
 
+<img width="1957" height="1296" alt="image" src="https://github.com/user-attachments/assets/8e654836-30dd-45f7-9919-f35f205d86c9" />
+
+
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.<br>
 Or visit [`my-ftp-peerjs.vercel`](https://my-ftp-peerjs.vercel.app/) to see the demo.<br>
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
@@ -44,10 +47,5 @@ For full system analysis. [**Click Here**](https://github.com/QA380/MyFTP-peerjs
  * Network Optimization
 
  **Fix:**
- * ~~Inbox received double the notifaction for single file~~
- * ~~Toggling audio-video reset the connection~~
- * Ghost file appears, only 1 item sent yet 2 received but only 1 can be downloaded
- * Audio-Video did not terminated when call end
- * Cursor highlight when hover on files, highlight too bright
- * Disconnecting did not end calls, unless reconnect peers
+ * Sidebar collapse state
  * 

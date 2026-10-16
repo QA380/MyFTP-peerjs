@@ -27,7 +27,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       md: 'px-4 py-2 text-sm gap-2',
       lg: 'px-6 py-3 text-base gap-2',
     };
-
+    
     return (
       <button
         ref={ref}
@@ -37,7 +37,5 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     );
   }
 );
-
 Button.displayName = 'Button';
-
 export { Button, type ButtonProps };
