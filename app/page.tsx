@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import { Button } from "@/components/animate-ui/components/radix/button";
-import { Files, FolderTrigger, FolderContent, FileItem } from "@/components/animate-ui/components/radix/files";
+import { Files, FolderItem, FolderTrigger, FolderContent, FileItem } from "@/components/animate-ui/components/radix/files";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
 import { supabase } from "@/lib/supabase";
@@ -2233,9 +2233,9 @@ export default function Home() {
                 <p className="text-xs text-slate-500">No files queued</p>
               ) : (
                 <div className="bg-slate-800/30 border border-slate-700 rounded-lg overflow-hidden">
-                  <Files className="text-xs">
+                  <Files className="text-xs" defaultOpen={["files", "folder"]}>
                     {uploadedFiles.length > 0 && (
-                      <div>
+                      <FolderItem value="files">
                         <FolderTrigger>Files</FolderTrigger>
                         <FolderContent>
                           {uploadedFiles.map((file, idx) => (
@@ -2253,10 +2253,10 @@ export default function Home() {
                             </div>
                           ))}
                         </FolderContent>
-                      </div>
+                      </FolderItem>
                     )}
                     {uploadedFolderFiles.length > 0 && (
-                      <div>
+                      <FolderItem value="folder">
                         <FolderTrigger>Folder</FolderTrigger>
                         <FolderContent>
                           {uploadedFolderFiles.map((file, idx) => (
@@ -2274,7 +2274,7 @@ export default function Home() {
                             </div>
                           ))}
                         </FolderContent>
-                      </div>
+                      </FolderItem>
                     )}
                   </Files>
                   <p className="text-xs text-slate-400 p-2 border-t border-slate-700 mt-2">Use Files tab to send</p>
