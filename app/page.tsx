@@ -7,10 +7,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
 import { Button } from "@/components/animate-ui/components/radix/button";
-import { Files, FolderItem, FolderTrigger, FolderContent, FileItem } from "@/components/animate-ui/components/radix/files";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/animate-ui/components/radix/sheet";
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
 import { supabase } from "@/lib/supabase";
+import {
+  ArrowUpFromLine,
+  Check,
+  Copy,
+  Download,
+  FileIcon,
+  FolderIcon,
+  FolderUp,
+  Link2,
+  MessageSquare,
+  Mic,
+  MicOff,
+  Phone,
+  PhoneOff,
+  RefreshCw,
+  ScrollText,
+  Settings,
+  Trash2,
+  UploadCloud,
+  UserRound,
+  Video,
+  VideoOff,
+  X,
+} from "lucide-react";
 
 
 type LogRow = {
@@ -194,9 +218,35 @@ type WorkerOutboundMessage =
       message: string;
     };
 
-type TreeEntry = {
+type QueueItem = {
+  id: string;
+  file: File;
   path: string;
-  size: number;
+  source: "Files" | "Folder";
+};
+
+type PanelTab = "transfer" | "chat" | "call" | "diag" | "received";
+
+const readDirectoryEntries = (reader: FileSystemDirectoryReader) =>
+  new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+
+const readEntryFile = (entry: FileSystemFileEntry) =>
+  new Promise<File>((resolve, reject) => entry.file(resolve, reject));
+
+const collectEntryFiles = async (entry: FileSystemEntry, prefix: string): Promise<{ file: File; path: string }[]> => {
+  if (entry.isFile) {
+    const file = await readEntryFile(entry as FileSystemFileEntry);
+    return [{ file, path: `${prefix}${file.name}` }];
+  }
+
+  const reader = (entry as FileSystemDirectoryEntry).createReader();
+  const children: FileSystemEntry[] = [];
+  for (let batch = await readDirectoryEntries(reader); batch.length > 0; batch = await readDirectoryEntries(reader)) {
+    children.push(...batch);
+  }
+
+  const nested = await Promise.all(children.map((child) => collectEntryFiles(child, `${prefix}${entry.name}/`)));
+  return nested.flat();
 };
 
 const normalizePathParts = (path: string) => path.replaceAll("\\", "/").split("/").filter(Boolean);
@@ -274,7 +324,12 @@ const writeBlobToDirectory = async (
 
 
 export default function Home() {
-  const [panelTab, setPanelTab] = useState<"transfer" | "call" | "chat" | "diag" | "settings">("transfer");
+  const [panelTab, setPanelTab] = useState<PanelTab>("transfer");
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [chatSeen, setChatSeen] = useState(0);
+  const [idCopied, setIdCopied] = useState(false);
 
   // Connection mode and server settings
   const [mode, setMode] = useState<"cloud" | "local">("cloud");
@@ -300,8 +355,7 @@ export default function Home() {
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [audioLevel, setAudioLevel] = useState(0);
   const [streamVersion, setStreamVersion] = useState(0);
-  const [uploadedFiles, setUploadedFiles] = useState<TreeEntry[]>([]);
-  const [uploadedFolderFiles, setUploadedFolderFiles] = useState<TreeEntry[]>([]);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [sendingItems, setSendingItems] = useState<OutgoingItem[]>([]);
   const [authEmail, setAuthEmail] = useState("");
@@ -328,6 +382,8 @@ export default function Home() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
+  const chatContainerRef = useRef<HTMLDivElement | null>(null);
+  const dragDepthRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -1228,13 +1284,13 @@ export default function Home() {
   );
 
   // Open data connection to target peer ID
-  const connectToTarget = useCallback(() => {
+  const connectToTarget = useCallback((idOverride?: string) => {
     if (!peerRef.current) {
       pushLog("Peer is not initialized .", true);
       return;
     }
 
-    const trimmed = targetId.trim();
+    const trimmed = (idOverride ?? targetId).trim();
     if (!trimmed) {
       pushLog("Please enter a target peer ID first.", true);
       return;
@@ -1295,27 +1351,31 @@ export default function Home() {
 
   // Stream files through worker so UI thread stays responsive
   const sendFilePayloads = useCallback(
-    async (files: FileList | null, label: "Files" | "Folder") => {
+    async (items: QueueItem[]) => {
       if (!requireConnection()) {
         return;
       }
-      if (!files || files.length === 0) {
-        pushLog(`No ${label.toLowerCase()} selected.`, true);
+      if (items.length === 0) {
+        pushLog("Queue is empty. Add files or a folder first.", true);
         return;
       }
+
+      const label = items.some((item) => item.source === "Folder") ? "Folder" : "Files";
+      let sentCount = 0;
 
       if (activeConnRef.current) {
         sendControlMessage(activeConnRef.current, {
           kind: "transfer-start",
           label,
-          count: files.length,
+          count: items.length,
         });
       }
 
-      for (const file of Array.from(files)) {
+      for (const item of items) {
+        const { file } = item;
         const transferId = `${Date.now()}-${Math.random()}`;
         const mime = file.type || "application/octet-stream";
-        const fileName = file.webkitRelativePath || file.name;
+        const fileName = item.path;
         const totalChunks = Math.max(1, Math.ceil(file.size / FILE_CHUNK_SIZE));
         const conn = activeConnRef.current;
 
@@ -1323,7 +1383,7 @@ export default function Home() {
           pushLog(`Skipping app-level compression for ${fileName}; file is already compressed or media.`);
         }
 
-        beginOutgoingTransfer(transferId, label, fileName, file.size, totalChunks);
+        beginOutgoingTransfer(transferId, item.source, fileName, file.size, totalChunks);
 
         try {
           if (!conn || !conn.open) {
@@ -1333,7 +1393,7 @@ export default function Home() {
           sendControlMessage(conn, {
             kind: "file-start",
             transferId,
-            source: label,
+            source: item.source,
             name: fileName,
             mime,
             size: file.size,
@@ -1367,7 +1427,9 @@ export default function Home() {
           });
 
           flushOutgoingTransfer(transferId);
-          pushLog(`Sent ${label.toLowerCase()}: ${fileName} (${formatBytes(file.size)})`);
+          sentCount += 1;
+          setQueue((prev) => prev.filter((queued) => queued.id !== item.id));
+          pushLog(`Sent ${item.source === "Folder" ? "folder file" : "file"}: ${fileName} (${formatBytes(file.size)})`);
         } catch (err) {
           pushLog(`Transfer canceled/failed for ${fileName}: ${String(err)}`, true);
           sendingTransfersRef.current.delete(transferId);
@@ -1375,7 +1437,7 @@ export default function Home() {
         }
       }
 
-      pushLog(`${label} upload complete. ${files.length} item(s) sent successfully.`);
+      pushLog(`${label} upload complete. ${sentCount} of ${items.length} item(s) sent successfully.`);
     },
     [
       beginOutgoingTransfer,
@@ -1472,36 +1534,69 @@ export default function Home() {
     pushLog(next ? "Camera enabled." : "Camera disabled.");
   }, [cameraEnabled, pushLog]);
 
-  // Update file/folder status cards when a picker changes
-  const onFilesSelected = useCallback(
-    (files: FileList | null, label: "file" | "folder") => {
-      const entries = files ? Array.from(files) : [];
-      const summary = summarizeSelection(entries);
-
-      if (label === "file") {
-        setUploadedFiles(entries.map((file) => ({ path: file.name, size: file.size })));
-      } else {
-        setUploadedFolderFiles(entries.map((file) => ({ path: file.webkitRelativePath || file.name, size: file.size })));
+  // Add picked or dropped files to the send queue
+  const addToQueue = useCallback(
+    (entries: { file: File; path: string; source: "Files" | "Folder" }[]) => {
+      if (entries.length === 0) {
+        return;
       }
 
-      if (summary.ready) {
-        pushLog(
-          `${label === "file" ? "Files" : "Folder"} uploaded: ${summary.count} item(s), ${formatBytes(summary.totalBytes)}. Ready to send.`
-        );
-      }
+      const summary = summarizeSelection(entries.map((entry) => entry.file));
+      setQueue((prev) => {
+        const known = new Set(prev.map((item) => `${item.path}:${item.file.size}`));
+        const fresh = entries
+          .filter((entry) => !known.has(`${entry.path}:${entry.file.size}`))
+          .map((entry) => ({ ...entry, id: `${Date.now()}-${Math.random()}` }));
+        return [...prev, ...fresh];
+      });
+      pushLog(`Queued ${summary.count} item(s), ${formatBytes(summary.totalBytes)}.`);
     },
     [pushLog, summarizeSelection]
   );
 
-  // Remove a queued file by index
-  const removeQueuedFile = useCallback((index: number, type: "file" | "folder") => {
-    if (type === "file") {
-      setUploadedFiles(prev => prev.filter((_, i) => i !== index));
-    } else {
-      setUploadedFolderFiles(prev => prev.filter((_, i) => i !== index));
-    }
-    pushLog(`Removed from queue.`);
-  }, [pushLog]);
+  const onFilesSelected = useCallback(
+    (input: HTMLInputElement, source: "Files" | "Folder") => {
+      const files = input.files ? Array.from(input.files) : [];
+      addToQueue(files.map((file) => ({ file, path: file.webkitRelativePath || file.name, source })));
+      input.value = "";
+    },
+    [addToQueue]
+  );
+
+  const onDropFiles = useCallback(
+    async (dataTransfer: DataTransfer) => {
+      const entries = Array.from(dataTransfer.items)
+        .map((item) => item.webkitGetAsEntry?.() ?? null)
+        .filter((entry): entry is FileSystemEntry => entry !== null);
+
+      if (entries.length === 0) {
+        addToQueue(Array.from(dataTransfer.files).map((file) => ({ file, path: file.name, source: "Files" as const })));
+        return;
+      }
+
+      try {
+        const groups = await Promise.all(
+          entries.map(async (entry) => {
+            const source: "Files" | "Folder" = entry.isDirectory ? "Folder" : "Files";
+            const files = await collectEntryFiles(entry, "");
+            return files.map((item) => ({ ...item, source }));
+          })
+        );
+        addToQueue(groups.flat());
+      } catch (err) {
+        pushLog(`Could not read dropped items: ${String(err)}`, true);
+      }
+    },
+    [addToQueue, pushLog]
+  );
+
+  const removeQueuedFile = useCallback((id: string) => {
+    setQueue((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const clearFinishedSends = useCallback(() => {
+    setSendingItems((prev) => prev.filter((item) => !item.complete));
+  }, []);
 
   // Copy peer ID
   const copyPeerId = useCallback(async () => {
@@ -1513,6 +1608,8 @@ export default function Home() {
 
     try {
       await navigator.clipboard.writeText(id);
+      setIdCopied(true);
+      window.setTimeout(() => setIdCopied(false), 1500);
       pushLog(`Copied peer ID: ${id}`);
     } catch (err) {
       pushLog(`Could not copy peer ID: ${String(err)}`, true);
@@ -1801,10 +1898,12 @@ export default function Home() {
 
   // Keep log scroller pinned to newest event
   useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    for (const container of [logContainerRef.current, chatContainerRef.current]) {
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
     }
-  }, [logs]);
+  }, [logs, panelTab]);
 
   // Mirror inbox items into a ref so cleanup can revoke object URLs safely
   useEffect(() => {
@@ -1880,258 +1979,390 @@ export default function Home() {
     };
   }, [callType, stopAudioMeter, streamVersion]);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100 flex flex-col">
-      <SpeedInsights />
-      
-      {/* Top bar */}
-      <div className="border-b border-slate-800 bg-[#020617]/80 backdrop-blur px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold tracking-tight">My<span className="text-cyan-500">FTP</span></h1>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900/50 text-xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span className="font-mono font-semibold">{myId}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={copyPeerId} aria-label="Copy peer ID">Copy ID</Button>
-          <Button variant="outline" size="sm" onClick={copyShareLink} aria-label="Copy share link">Share</Button>
-          <Button variant="outline" size="sm" onClick={() => makePeer(true)} aria-label="Generate new ID">New ID</Button>
-          <Button variant="destructive" size="sm" onClick={() => makePeer()} aria-label="Reconnect">Reconnect</Button>
-        </div>
+  const isConnected = connState !== "Not connected";
+  const peerReady = myId.trim() !== "" && myId !== "Connecting...";
+  const connectedPeer = connState.replace(/^Connected to\s*/, "");
+  const queueBytes = queue.reduce((sum, item) => sum + item.file.size, 0);
+  const visibleQueue = queue.slice(0, 200);
+  const sendsRunning = sendingItems.some((item) => !item.complete);
+  const readyCount = inboxItems.filter((item) => item.complete).length;
+  const chatMessages = logs.flatMap((row) => {
+    const match = /^\[(.+?)\] (Sent|Received): ([\s\S]*)$/.exec(row.text);
+    return match ? [{ id: row.id, time: match[1], mine: match[2] === "Sent", text: match[3] }] : [];
+  });
+  const receivedChatCount = chatMessages.filter((row) => !row.mine).length;
+  const unreadChat = panelTab === "chat" ? 0 : Math.max(0, receivedChatCount - chatSeen);
+
+  const changeTab = (value: string) => {
+    if (panelTab === "chat" || value === "chat") {
+      setChatSeen(receivedChatCount);
+    }
+    setPanelTab(value as PanelTab);
+  };
+
+  const connectTrusted = (peerId: string) => {
+    setTargetId(peerId);
+    connectToTarget(peerId);
+    setAccountOpen(false);
+  };
+
+  const sectionTitle = "text-xs font-semibold uppercase tracking-widest text-slate-400";
+  const card = "rounded-2xl border border-slate-800 bg-slate-900/40";
+  const badge = "ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan-500/20 px-1.5 text-[10px] font-bold text-cyan-300";
+  const sheetClass = "w-full max-w-[400px] border-slate-800 bg-[#0a0f1f] text-slate-100 overflow-y-auto";
+
+  const receivedPanel = (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between px-4 pt-4 pb-3">
+        <h2 className={sectionTitle}>Received</h2>
+        <span className="text-xs text-slate-500">{readyCount} ready</span>
       </div>
-
-      {/* Three-column main layout */}
-      <div className="flex-1 overflow-hidden grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-0 bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827]">
-        
-        {/* Left column: Peer connection & account */}
-        <div className="border-r border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 h-full">
-          <div className="p-4 space-y-6">
-            {/* Connect to peer section */}
-            <div className="space-y-3">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Connect</h2>
-              <Input
-                aria-label="Target peer ID"
-                placeholder="Enter peer ID…"
-                value={targetId}
-                onChange={(e) => setTargetId(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    if (connState === "Not connected") connectToTarget();
-                    else disconnectFromTarget();
-                  }
-                }}
-              />
-              <Input
-                aria-label="Display name"
-                placeholder="Name (optional)"
-                value={sender}
-                onChange={(e) => setSender(e.target.value)}
-              />
-              <Button
-                variant="default"
-                className="w-full"
-                onClick={() => {
-                  if (connState === "Not connected") connectToTarget();
-                  else disconnectFromTarget();
-                }}
-                aria-label={connState === "Not connected" ? "Connect" : "Disconnect"}
-              >
-                {connState === "Not connected" ? "Connect" : "Disconnect"}
-              </Button>
-              <div className="text-xs text-slate-400">
-                Status: <span className="font-mono font-semibold text-slate-100">{connState}</span>
-              </div>
-            </div>
-
-            <div className="h-px bg-slate-700"></div>
-
-            {/* Trusted peers section */}
-            <div className="space-y-3">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Trusted Peers</h2>
-              {trustedPeers.length === 0 ? (
-                <p className="text-xs text-slate-500 italic">No trusted peers saved yet.</p>
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4">
+        {inboxItems.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 px-4 py-10 text-center">
+            <Download className="size-6 text-slate-600" />
+            <p className="text-sm text-slate-400">Nothing received yet</p>
+            <p className="text-xs text-slate-500">Files your peer sends will appear here.</p>
+          </div>
+        ) : (
+          inboxItems.map((item) => (
+            <div key={item.id} className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+              {item.source === "Folder" ? (
+                <FolderIcon className="size-4 shrink-0 text-amber-300" />
               ) : (
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {trustedPeers.map((peerId) => (
-                    <div key={peerId} className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-700 bg-slate-800/30 hover:bg-slate-800/60 transition text-xs">
-                      <span className="font-mono text-slate-300 truncate flex-1">{peerId}</span>
+                <FileIcon className="size-4 shrink-0 text-cyan-300" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium" title={item.name}>{item.name}</p>
+                {item.complete ? (
+                  <p className="text-xs text-slate-500">{formatBytes(item.size)}</p>
+                ) : (
+                  <div className="mt-1.5 space-y-1">
+                    <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
+                    <p className="flex justify-between text-[11px] text-slate-500">
+                      <span>{Math.round(item.progress * 100)}% of {formatBytes(item.size)}</span>
+                      <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
+                    </p>
+                  </div>
+                )}
+              </div>
+              {item.complete && (
+                <Button size="sm" variant="ghost" onClick={() => downloadInboxFile(item)} aria-label={`Download ${item.name}`} title="Save">
+                  <Download className="size-4" />
+                </Button>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <div className="flex gap-2 border-t border-slate-800 p-4">
+        <Button variant="default" size="sm" className="flex-1" onClick={downloadAll} disabled={readyCount === 0}>
+          <Download className="size-4" /> Save all
+        </Button>
+        <Button variant="outline" size="sm" onClick={clearInbox} disabled={inboxItems.length === 0} aria-label="Clear received">
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex h-dvh flex-col bg-gradient-to-br from-[#030712] via-[#0b1120] to-[#111827] text-slate-100">
+      <SpeedInsights />
+
+      <header className="flex flex-wrap items-center gap-3 border-b border-slate-800 bg-[#020617]/80 px-4 py-3 backdrop-blur">
+        <h1 className="text-lg font-bold tracking-tight">My<span className="text-cyan-500">FTP</span></h1>
+
+        <div className="flex min-w-0 items-center gap-1 rounded-full border border-slate-700 bg-slate-900/60 py-1 pr-1 pl-3 text-xs">
+          <span
+            className={`size-2 shrink-0 rounded-full ${peerReady ? "bg-emerald-400" : "animate-pulse bg-amber-400"}`}
+            title={peerReady ? "Online" : "Connecting to server"}
+          />
+          <span className="ml-1 hidden text-slate-400 sm:inline">Your ID</span>
+          <span className="max-w-[9rem] truncate font-mono font-semibold sm:max-w-none">{myId}</span>
+          <Button variant="ghost" size="sm" className="!rounded-full !px-2" onClick={copyPeerId} aria-label="Copy peer ID" title="Copy ID">
+            {idCopied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+          </Button>
+          <Button variant="ghost" size="sm" className="!rounded-full !px-2" onClick={copyShareLink} aria-label="Copy share link" title="Copy share link">
+            <Link2 className="size-3.5" />
+          </Button>
+        </div>
+
+        <div className="order-last w-full lg:order-none lg:mx-auto lg:w-auto lg:max-w-xl lg:flex-1">
+          {isConnected ? (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5">
+              <span className="size-2 shrink-0 rounded-full bg-emerald-400" />
+              <span className="min-w-0 flex-1 truncate text-sm">
+                Connected to <span className="font-mono font-semibold">{connectedPeer}</span>
+              </span>
+              {diagnostics.rttMs !== null && (
+                <span className="hidden text-xs text-slate-400 sm:inline">{formatLatency(diagnostics.rttMs)}</span>
+              )}
+              <Button variant="destructive" size="sm" onClick={disconnectFromTarget}>Disconnect</Button>
+            </div>
+          ) : (
+            <form
+              className="flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                connectToTarget();
+              }}
+            >
+              <Input
+                aria-label="Peer ID to connect to"
+                placeholder="Enter a friend's peer ID…"
+                value={targetId}
+                onChange={(event) => setTargetId(event.target.value)}
+                className="font-mono"
+              />
+              <Button type="submit" variant="default" disabled={!peerReady || !targetId.trim()}>Connect</Button>
+            </form>
+          )}
+        </div>
+
+        <div className="ml-auto flex items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Settings">
+            <Settings className="size-4" />
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setAccountOpen(true)} aria-label="Account and trusted peers" title="Account">
+            <UserRound className="size-4" />
+            {authUserId && <span className="size-1.5 rounded-full bg-emerald-400" />}
+          </Button>
+        </div>
+      </header>
+
+      <main className="flex min-h-0 flex-1">
+        <Tabs value={panelTab} onValueChange={changeTab} className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <TabsList className="order-last h-auto shrink-0 rounded-none border-x-0 border-b-0 border-t border-slate-800 bg-[#020617]/90 lg:order-first lg:border-t-0 lg:border-b">
+            <TabsTrigger value="transfer" className="gap-1.5 text-xs">
+              <ArrowUpFromLine className="size-4" /><span className="hidden sm:inline">Send</span>
+              {queue.length > 0 && <span className={badge}>{queue.length}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="received" className="gap-1.5 text-xs lg:hidden">
+              <Download className="size-4" /><span className="hidden sm:inline">Received</span>
+              {readyCount > 0 && <span className={badge}>{readyCount}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="chat" className="gap-1.5 text-xs">
+              <MessageSquare className="size-4" /><span className="hidden sm:inline">Chat</span>
+              {unreadChat > 0 && <span className={badge}>{unreadChat}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="call" className="gap-1.5 text-xs">
+              <Phone className="size-4" /><span className="hidden sm:inline">Call</span>
+              {callType && <span className="size-1.5 animate-pulse rounded-full bg-emerald-400" />}
+            </TabsTrigger>
+            <TabsTrigger value="diag" className="gap-1.5 text-xs">
+              <ScrollText className="size-4" /><span className="hidden sm:inline">Logs</span>
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent
+            value="transfer"
+            className="relative mt-0 min-h-0 flex-1 overflow-y-auto"
+            onDragEnter={(event) => {
+              event.preventDefault();
+              dragDepthRef.current += 1;
+              setIsDragging(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+            }}
+            onDragLeave={() => {
+              dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+              if (dragDepthRef.current === 0) setIsDragging(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              dragDepthRef.current = 0;
+              setIsDragging(false);
+              void onDropFiles(event.dataTransfer);
+            }}
+          >
+            <div className="mx-auto w-full max-w-3xl space-y-5 p-4 sm:p-6">
+              <div
+                className={`flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed px-6 py-10 text-center transition ${
+                  isDragging ? "border-cyan-400 bg-cyan-500/10" : "border-slate-700 bg-slate-900/30"
+                }`}
+              >
+                <UploadCloud className={`size-10 ${isDragging ? "text-cyan-300" : "text-slate-500"}`} />
+                <div>
+                  <p className="text-base font-semibold">{isDragging ? "Drop to add to the queue" : "Drop files or folders here"}</p>
+                  <p className="mt-1 text-sm text-slate-400">
+                    {isConnected ? "They'll be sent directly to your peer." : "You can queue files now and send once you're connected."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                    <FileIcon className="size-4" /> Choose files
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => folderInputRef.current?.click()}>
+                    <FolderUp className="size-4" /> Choose folder
+                  </Button>
+                </div>
+              </div>
+
+              {queue.length > 0 && (
+                <section className={card}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+                    <div>
+                      <h2 className={sectionTitle}>Queue</h2>
+                      <p className="text-xs text-slate-500">{queue.length} item(s) · {formatBytes(queueBytes)}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => setQueue([])}>Clear</Button>
                       <Button
-                        variant="secondary"
+                        variant="default"
                         size="sm"
-                        onClick={() => {
-                          setTargetId(peerId);
-                          window.setTimeout(() => connectToTarget(), 0);
-                        }}
-                        aria-label={`Connect to ${peerId}`}
+                        onClick={() => void sendFilePayloads(queue)}
+                        disabled={!isConnected || sendsRunning}
+                        title={isConnected ? undefined : "Connect to a peer first"}
                       >
-                        Go
+                        <ArrowUpFromLine className="size-4" /> Send all
                       </Button>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                  <ul className="max-h-80 divide-y divide-slate-800/70 overflow-y-auto">
+                    {visibleQueue.map((item) => (
+                      <li key={item.id} className="flex items-center gap-3 px-4 py-2">
+                        {item.source === "Folder" ? (
+                          <FolderIcon className="size-4 shrink-0 text-amber-300" />
+                        ) : (
+                          <FileIcon className="size-4 shrink-0 text-cyan-300" />
+                        )}
+                        <span className="min-w-0 flex-1 truncate text-sm" title={item.path}>{item.path}</span>
+                        <span className="shrink-0 text-xs text-slate-500">{formatBytes(item.file.size)}</span>
+                        <Button variant="ghost" size="sm" className="!px-1.5" onClick={() => removeQueuedFile(item.id)} aria-label={`Remove ${item.path}`}>
+                          <X className="size-3.5" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                  {queue.length > visibleQueue.length && (
+                    <p className="border-t border-slate-800 px-4 py-2 text-xs text-slate-500">+{queue.length - visibleQueue.length} more</p>
+                  )}
+                </section>
               )}
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full"
-                onClick={saveTrustedConnection}
-                aria-label="Save as trusted"
-              >
-                Save Current
-              </Button>
-            </div>
 
-            <div className="h-px bg-slate-700"></div>
-
-            {/* Account section */}
-            <div className="space-y-3">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Account</h2>
-              <Input
-                id="email-input"
-                aria-label="Email"
-                placeholder="Email"
-                type="email"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-              />
-              <Input
-                id="password-input"
-                aria-label="Password"
-                placeholder="Password"
-                type="password"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="default" size="sm" onClick={signUpAccount}>Sign Up</Button>
-                <Button variant="default" size="sm" onClick={signInAccount}>Sign In</Button>
-              </div>
-              <Button variant="outline" size="sm" className="w-full" onClick={signOutAccount}>Sign Out</Button>
-              <p className="text-xs text-slate-400">{authUserId ? `Signed in: ${authUserId.slice(0, 8)}...` : "Not signed in"}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Center column: Tabbed interface */}
-        <div className="border-r border-slate-800 bg-[#0a0f1f] overflow-hidden flex flex-col sm:col-span-2 lg:col-span-2">
-          <Tabs value={panelTab} onValueChange={(value) => setPanelTab(value as "transfer" | "call" | "chat" | "diag" | "settings")} className="flex flex-col h-full">
-            <TabsList className="border-b border-slate-700 px-4 flex gap-1 bg-slate-900/30 overflow-x-auto rounded-none">
-              <TabsTrigger value="transfer" className="text-xs whitespace-nowrap">Files</TabsTrigger>
-              <TabsTrigger value="chat" className="text-xs whitespace-nowrap">Chat</TabsTrigger>
-              <TabsTrigger value="call" className="text-xs whitespace-nowrap">Calls</TabsTrigger>
-              <TabsTrigger value="diag" className="text-xs whitespace-nowrap">Logs</TabsTrigger>
-              <TabsTrigger value="settings" className="text-xs whitespace-nowrap">Settings</TabsTrigger>
-            </TabsList>
-
-            {/* Transfer/Files tab */}
-            <TabsContent value="transfer" className="flex-1 overflow-y-auto p-4">
-              <div className="space-y-4">
-                {/* Quick actions */}
-                <div className="grid grid-cols-2 gap-2">
-                  <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} aria-label="Add files">Add Files</Button>
-                  <Button variant="secondary" size="sm" onClick={() => folderInputRef.current?.click()} aria-label="Add folder">Add Folder</Button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button variant="default" size="sm" onClick={() => sendFilePayloads(fileInputRef.current?.files ?? null, "Files")}>Send Files</Button>
-                  <Button variant="default" size="sm" onClick={() => sendFilePayloads(folderInputRef.current?.files ?? null, "Folder")}>Send Folder</Button>
-                </div>
-
-                <h3 className="text-sm font-semibold pt-4">Active Transfers</h3>
-                {sendingItems.length === 0 ? (
-                  <p className="text-xs text-slate-500">No active transfers</p>
-                ) : (
-                  <div className="space-y-2">
+              {sendingItems.length > 0 && (
+                <section className={card}>
+                  <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                    <h2 className={sectionTitle}>Sending</h2>
+                    <Button variant="ghost" size="sm" onClick={clearFinishedSends} disabled={!sendingItems.some((item) => item.complete)}>
+                      Clear finished
+                    </Button>
+                  </div>
+                  {sendsRunning && (
+                    <p className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+                      Keep this tab open until transfers finish.
+                    </p>
+                  )}
+                  <ul className="max-h-80 divide-y divide-slate-800/70 overflow-y-auto">
                     {sendingItems.map((item) => (
-                      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
-                        <div className="flex items-center justify-between gap-2 mb-2">
-                          <span className="text-xs font-medium truncate flex-1">{item.name}</span>
-                          <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
+                      <li key={item.id} className="space-y-1.5 px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          {item.complete ? (
+                            <Check className="size-4 shrink-0 text-emerald-400" />
+                          ) : (
+                            <ArrowUpFromLine className="size-4 shrink-0 animate-pulse text-cyan-300" />
+                          )}
+                          <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>{item.name}</span>
+                          <span className="shrink-0 text-xs text-slate-500">{formatBytes(item.size)}</span>
                         </div>
-                        <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
-                        <div className="flex justify-between text-xs text-slate-400 mt-1">
-                          <span>{item.complete ? "Done" : `${Math.round(item.progress * 100)}%`}</span>
-                          <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
-                        </div>
-                      </div>
+                        {!item.complete && (
+                          <>
+                            <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
+                            <p className="flex justify-between text-[11px] text-slate-500">
+                              <span>{Math.round(item.progress * 100)}%</span>
+                              <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
+                            </p>
+                          </>
+                        )}
+                      </li>
                     ))}
-                  </div>
-                )}
+                  </ul>
+                </section>
+              )}
+            </div>
+          </TabsContent>
 
-                <h3 className="text-sm font-semibold pt-4">Received Files</h3>
-                {inboxItems.length === 0 ? (
-                  <p className="text-xs text-slate-500">No received files</p>
+          <TabsContent value="received" className="mt-0 min-h-0 flex-1 lg:hidden">
+            {receivedPanel}
+          </TabsContent>
+
+          <TabsContent value="chat" className="mt-0 flex min-h-0 flex-1 flex-col">
+            <div ref={chatContainerRef} className="min-h-0 flex-1 overflow-y-auto" role="log" aria-live="polite">
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 p-4 sm:p-6">
+                {chatMessages.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-16 text-center">
+                    <MessageSquare className="size-8 text-slate-600" />
+                    <p className="text-sm text-slate-400">No messages yet</p>
+                    <p className="text-xs text-slate-500">{isConnected ? "Say hi to your peer." : "Connect to a peer to start chatting."}</p>
+                  </div>
                 ) : (
-                  <div className="space-y-2">
-                    {inboxItems.map((item) => (
-                      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
-                        <div className="flex items-center justify-between gap-2 mb-2">
-                          <span className="text-xs font-medium truncate flex-1">{item.name}</span>
-                          <span className="text-xs text-slate-400">{formatBytes(item.size)}</span>
-                        </div>
-                        <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
-                        <div className="flex justify-between text-xs text-slate-400 mt-1">
-                          <span>{item.complete ? "Ready" : `${Math.round(item.progress * 100)}%`}</span>
-                          <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
-                        </div>
+                  chatMessages.slice(-100).map((row) => (
+                    <div key={row.id} className={`flex flex-col ${row.mine ? "items-end" : "items-start"}`}>
+                      <div
+                        className={`max-w-[80%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${
+                          row.mine ? "rounded-br-sm bg-cyan-500 text-slate-950" : "rounded-bl-sm border border-slate-700 bg-slate-800/70"
+                        }`}
+                      >
+                        {row.text}
                       </div>
-                    ))}
-                  </div>
-                )}
-
-                <p className="text-xs text-slate-500 pt-2">DO NOT close this tab during transfers</p>
-              </div>
-            </TabsContent>
-
-            {/* Chat tab */}
-            <TabsContent value="chat" className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs" ref={logContainerRef} role="log" aria-live="polite">
-                {logs.filter(row => row.text.includes("Sent:") || row.text.includes("Received:")).slice(-50).map((row) => (
-                  <div key={row.id} className="bg-slate-800/30 border border-slate-700 rounded p-2">
-                    <div className="text-slate-400 font-mono text-xs">
-                      {row.text.includes("Sent:") ? "You" : "Peer"}: {row.text.replace(/^.*?Sent:|^.*?Received:/, "").trim()}
+                      <span className="mt-0.5 px-1 text-[10px] text-slate-500">{row.mine ? "You" : "Peer"} · {row.time}</span>
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
-              <div className="border-t border-slate-700 p-3 bg-slate-900/30 flex gap-2">
-                <Input
-                  aria-label="Message"
-                  placeholder="Type message…"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") sendCurrentMessage(); }}
-                  className="flex-1 text-xs"
-                />
-                <Button variant="secondary" size="sm" onClick={sendCurrentMessage}>Send</Button>
-              </div>
-            </TabsContent>
+            </div>
+            <form
+              className="mx-auto flex w-full max-w-3xl gap-2 border-t border-slate-800 p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                sendCurrentMessage();
+              }}
+            >
+              <Input
+                aria-label="Display name"
+                placeholder="Name"
+                value={sender}
+                onChange={(event) => setSender(event.target.value)}
+                className="!w-24 shrink-0 sm:!w-32"
+              />
+              <Input
+                aria-label="Message"
+                placeholder={isConnected ? "Type a message…" : "Connect to chat"}
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                disabled={!isConnected}
+              />
+              <Button type="submit" variant="default" disabled={!isConnected || !message.trim()}>Send</Button>
+            </form>
+          </TabsContent>
 
-            {/* Calls tab */}
-            <TabsContent value="call" className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="default" onClick={() => startCall("audio")} aria-label="Audio call">Audio</Button>
-                <Button variant="default" onClick={() => startCall("video")} aria-label="Video call">Video</Button>
-              </div>
-              <Button variant="destructive" className="w-full" onClick={endCall}>End Call</Button>
-              <div className="flex gap-2">
-                <Button variant={micEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleMic}>{micEnabled ? "Mic On" : "Mic Off"}</Button>
-                <Button variant={cameraEnabled ? "secondary" : "destructive"} className="flex-1" onClick={toggleCamera}>{cameraEnabled ? "Cam on" : "Cam Off"}</Button>
+          <TabsContent value="call" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-4xl space-y-4 p-4 sm:p-6">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className={`${card} relative overflow-hidden`}>
+                  <video ref={remoteVideoRef} autoPlay playsInline className="aspect-video w-full bg-slate-950 object-cover" aria-label="Remote video" />
+                  <span className="absolute top-2 left-2 rounded-md bg-black/60 px-2 py-0.5 text-[11px]">Peer</span>
+                </div>
+                <div className={`${card} relative overflow-hidden`}>
+                  <video ref={localVideoRef} autoPlay playsInline muted className="aspect-video w-full -scale-x-100 bg-slate-950 object-cover" aria-label="Local video" />
+                  <span className="absolute top-2 left-2 rounded-md bg-black/60 px-2 py-0.5 text-[11px]">You</span>
+                </div>
               </div>
 
               {callType === "audio" && (
-                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-3">
-                  <p className="text-xs text-slate-400 mb-2">Voice Activity</p>
+                <div className={`${card} p-4`}>
+                  <p className="mb-2 text-xs text-slate-400">Voice activity</p>
                   <div className="flex h-12 items-end gap-1">
-                    {Array.from({ length: 18 }).map((_, i) => {
+                    {Array.from({ length: 24 }).map((_, i) => {
                       const wave = Math.min(1, audioLevel + ((i % 3) + 1) * 0.08);
-                      const height = 4 + Math.round(wave * 32);
                       return (
                         <span
                           key={`wave-${i}`}
-                          className="w-1 rounded-sm bg-cyan-400/85"
-                          style={{ height }}
+                          className="w-1.5 rounded-sm bg-cyan-400/85"
+                          style={{ height: 4 + Math.round(wave * 40) }}
                           aria-hidden="true"
                         />
                       );
@@ -2140,173 +2371,225 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
-                  <p className="text-slate-400 mb-2">Local</p>
-                  <video ref={localVideoRef} autoPlay playsInline muted className="w-full rounded h-24 bg-slate-900" aria-label="Local video" />
-                </div>
-                <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-2">
-                  <p className="text-slate-400 mb-2">Remote</p>
-                  <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded h-24 bg-slate-900" aria-label="Remote video" />
-                </div>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {callType ? (
+                  <>
+                    <Button variant={micEnabled ? "outline" : "destructive"} onClick={toggleMic} aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}>
+                      {micEnabled ? <Mic className="size-4" /> : <MicOff className="size-4" />}
+                      {micEnabled ? "Mute" : "Unmute"}
+                    </Button>
+                    {callType === "video" && (
+                      <Button variant={cameraEnabled ? "outline" : "destructive"} onClick={toggleCamera} aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"}>
+                        {cameraEnabled ? <Video className="size-4" /> : <VideoOff className="size-4" />}
+                        {cameraEnabled ? "Camera off" : "Camera on"}
+                      </Button>
+                    )}
+                    <Button variant="destructive" onClick={endCall}>
+                      <PhoneOff className="size-4" /> End call
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant="default" onClick={() => startCall("audio")} disabled={!isConnected}>
+                      <Phone className="size-4" /> Voice call
+                    </Button>
+                    <Button variant="default" onClick={() => startCall("video")} disabled={!isConnected}>
+                      <Video className="size-4" /> Video call
+                    </Button>
+                  </>
+                )}
               </div>
-            </TabsContent>
+              {!isConnected && <p className="text-center text-xs text-slate-500">Connect to a peer to start a call.</p>}
+            </div>
+          </TabsContent>
 
-            {/* Logs tab */}
-            <TabsContent value="diag" className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs font-mono" ref={logContainerRef} role="log" aria-live="polite">
-                {logs.slice(-50).map((row) => (
+          <TabsContent value="diag" className="mt-0 flex min-h-0 flex-1 flex-col">
+            <div className="grid grid-cols-2 gap-2 border-b border-slate-800 p-4 text-xs sm:grid-cols-4">
+              <div className={`${card} p-3`}>
+                <p className="text-slate-500">Channel</p>
+                <p className={`font-mono font-semibold ${diagnostics.dataChannelState === "open" ? "text-emerald-400" : "text-amber-400"}`}>{diagnostics.dataChannelState}</p>
+              </div>
+              <div className={`${card} p-3`}>
+                <p className="text-slate-500">Buffered</p>
+                <p className={`font-mono font-semibold ${diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-400" : "text-emerald-400"}`}>{formatBytes(diagnostics.bufferedAmount)}</p>
+              </div>
+              <div className={`${card} p-3`}>
+                <p className="text-slate-500">Ping (RTT)</p>
+                <p className={`font-mono font-semibold ${diagnostics.rttMs === null ? "text-amber-400" : diagnostics.rttMs > 220 ? "text-rose-400" : "text-emerald-400"}`}>{formatLatency(diagnostics.rttMs)}</p>
+              </div>
+              <div className={`${card} p-3`}>
+                <p className="text-slate-500">Route</p>
+                <p className="font-mono font-semibold text-slate-300">{diagnostics.route}</p>
+              </div>
+            </div>
+            <div ref={logContainerRef} className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4 font-mono text-xs" role="log" aria-live="polite">
+              {logs.length === 0 ? (
+                <p className="text-slate-500">No log entries.</p>
+              ) : (
+                logs.slice(-200).map((row) => (
                   <div key={row.id} className={row.error ? "text-rose-400" : row.text.includes("Sent:") ? "text-cyan-400" : "text-slate-300"}>
                     {row.text}
                   </div>
-                ))}
-              </div>
-              <div className="border-t border-slate-700 p-3 bg-slate-900/30">
-                <Button variant="outline" size="sm" className="w-full" onClick={() => { setLogs([]); pushLog("Chat cleared."); }}>Clear Logs</Button>
-              </div>
-            </TabsContent>
+                ))
+              )}
+            </div>
+            <div className="border-t border-slate-800 p-3">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={() => {
+                  setLogs([]);
+                  setChatSeen(0);
+                  pushLog("Logs cleared.");
+                }}
+              >
+                Clear logs
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
 
-            {/* Settings tab */}
-            <TabsContent value="settings" className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div>
-                <label htmlFor="mode-select" className="text-xs font-medium text-slate-400 block mb-2">Peer Server</label>
-                <Select value={mode} onValueChange={(m) => {
-                  setMode(m as "cloud" | "local");
-                  applyModeDefaults(m as "cloud" | "local");
-                }}>
-                  <SelectTrigger id="mode-select">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cloud">Cloud (PeerJS)</SelectItem>
-                    <SelectItem value="local">Local server</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Input aria-label="Host" placeholder="Host" value={host} onChange={(e) => setHost(e.target.value)} />
-              <Input aria-label="Port" placeholder="Port" value={port} onChange={(e) => setPort(e.target.value)} />
-              <Input aria-label="Path" placeholder="Path" value={path} onChange={(e) => setPath(e.target.value)} />
-              <Input aria-label="Secure" placeholder="Secure (true/false)" value={secure} onChange={(e) => setSecure(e.target.value)} />
-              <p className="text-xs text-slate-500">{modeHint}</p>
-            </TabsContent>
-          </Tabs>
-        </div>
+        <aside className="hidden w-[340px] shrink-0 border-l border-slate-800 bg-[#020617]/60 lg:block">
+          {receivedPanel}
+        </aside>
+      </main>
 
-        {/* Right column: File downloads & transfer queue */}
-        <div className="border-l border-slate-800 bg-[#020617]/60 overflow-y-auto sm:col-span-1 lg:col-span-1 h-full">
-          <div className="p-4 space-y-6">
-            {/* Received inbox */}
-            <div className="space-y-3">
+      <Sheet open={accountOpen} onOpenChange={setAccountOpen}>
+        <SheetContent side="right" className={sheetClass}>
+          <SheetHeader>
+            <SheetTitle className="text-slate-100">Account</SheetTitle>
+            <SheetDescription className="text-slate-400">Sign in to save trusted peers across devices.</SheetDescription>
+          </SheetHeader>
+          <div className="space-y-6 px-4 pb-6">
+            {authUserId ? (
+              <div className={`${card} flex items-center justify-between gap-2 p-3`}>
+                <div className="min-w-0">
+                  <p className="text-xs text-slate-500">Signed in</p>
+                  <p className="truncate font-mono text-sm">{authEmail || `${authUserId.slice(0, 8)}…`}</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={signOutAccount}>Sign out</Button>
+              </div>
+            ) : (
+              <form
+                className="space-y-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void signInAccount();
+                }}
+              >
+                <Input aria-label="Email" placeholder="Email" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} />
+                <Input aria-label="Password" placeholder="Password" type="password" autoComplete="current-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} />
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <Button type="submit" variant="default" size="sm">Sign in</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={signUpAccount}>Create account</Button>
+                </div>
+              </form>
+            )}
+
+            <section className="space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Downloads</h2>
-                <span className="text-xs text-slate-500 bg-slate-800/50 px-2 py-1 rounded">{inboxItems.filter(i => i.complete).length}</span>
+                <h2 className={sectionTitle}>Trusted peers</h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={saveTrustedConnection}
+                  disabled={!isConnected || !authUserId}
+                  title={!authUserId ? "Sign in first" : !isConnected ? "Connect to a peer first" : undefined}
+                >
+                  Save current
+                </Button>
               </div>
-              {inboxItems.length === 0 ? (
-                <p className="text-xs text-slate-500">No items</p>
+              {trustedPeers.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  {authUserId ? "Connect to someone, then save them here for one-click reconnects." : "Sign in to use trusted peers."}
+                </p>
               ) : (
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {inboxItems.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-700 bg-slate-800/30 text-xs">
-                      <div className="flex-1 min-w-0">
-                        <p className="truncate font-medium">{item.name}</p>
-                        <p className="text-slate-500">{formatBytes(item.size)}</p>
-                      </div>
-                      {item.complete && (
-                        <Button size="sm" variant="secondary" onClick={() => downloadInboxFile(item)} aria-label={`Download ${item.name}`}>↓</Button>
-                      )}
-                    </div>
+                <ul className="space-y-2">
+                  {trustedPeers.map((peerId) => (
+                    <li key={peerId} className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/50 p-2 pl-3">
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{peerId}</span>
+                      <Button variant="secondary" size="sm" onClick={() => connectTrusted(peerId)} disabled={isConnected}>
+                        Connect
+                      </Button>
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
-              <div className="flex gap-2 pt-2">
-                <Button variant="outline" size="sm" className="flex-1" onClick={downloadAll}>All</Button>
-                <Button variant="outline" size="sm" className="flex-1" onClick={clearInbox}>Clear</Button>
-              </div>
-            </div>
-
-            <div className="h-px bg-slate-700"></div>
-
-            {/* Upload queue with file tree */}
-            <div className="space-y-3">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Queue</h2>
-              {uploadedFiles.length + uploadedFolderFiles.length === 0 ? (
-                <p className="text-xs text-slate-500">No files queued</p>
-              ) : (
-                <div className="bg-slate-800/30 border border-slate-700 rounded-lg overflow-hidden">
-                  <Files className="text-xs" defaultOpen={["files", "folder"]}>
-                    {uploadedFiles.length > 0 && (
-                      <FolderItem value="files">
-                        <FolderTrigger>Files</FolderTrigger>
-                        <FolderContent>
-                          {uploadedFiles.map((file, idx) => (
-                            <div key={`file-${idx}`} className="flex items-center justify-between gap-1">
-                              <FileItem>{file.path}</FileItem>
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                onClick={() => removeQueuedFile(idx, "file")}
-                                className="h-5 px-1 text-xs"
-                                aria-label={`Remove ${file.path}`}
-                              >
-                                ✕
-                              </Button>
-                            </div>
-                          ))}
-                        </FolderContent>
-                      </FolderItem>
-                    )}
-                    {uploadedFolderFiles.length > 0 && (
-                      <FolderItem value="folder">
-                        <FolderTrigger>Folder</FolderTrigger>
-                        <FolderContent>
-                          {uploadedFolderFiles.map((file, idx) => (
-                            <div key={`folder-${idx}`} className="flex items-center justify-between gap-1">
-                              <FileItem>{file.path}</FileItem>
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                onClick={() => removeQueuedFile(idx, "folder")}
-                                className="h-5 px-1 text-xs"
-                                aria-label={`Remove ${file.path}`}
-                              >
-                                ✕
-                              </Button>
-                            </div>
-                          ))}
-                        </FolderContent>
-                      </FolderItem>
-                    )}
-                  </Files>
-                  <p className="text-xs text-slate-400 p-2 border-t border-slate-700 mt-2">Use Files tab to send</p>
-                </div>
-              )}
-            </div>
-
-            <div className="h-px bg-slate-700"></div>
-
-            {/* Server info & diagnostics */}
-            <div className="space-y-3 text-xs">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Info</h2>
-              <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-1 font-mono text-slate-400">
-                <p>Status: <span className="text-emerald-400 font-semibold">Active</span></p>
-                <p>Mode: <span className="text-cyan-400 font-semibold">{mode === "cloud" ? "Cloud" : "Local"}</span></p>
-                <p className="text-slate-500 text-xs mt-2">Keep tab open during transfers</p>
-              </div>
-              <div className="bg-slate-800/30 border border-slate-700 rounded-lg p-2 space-y-2 font-mono text-xs">
-                <p className="text-slate-400 font-semibold mb-2">Diagnostics</p>
-                <div className="flex justify-between"><span className="text-slate-400">Channel</span><span className={diagnostics.dataChannelState === "open" ? "text-emerald-400" : "text-amber-400"}>{diagnostics.dataChannelState}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Buffered</span><span className={diagnostics.bufferedAmount > BUFFER_HIGH_WATERMARK ? "text-rose-400" : "text-emerald-400"}>{formatBytes(diagnostics.bufferedAmount)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Ping (RTT)</span><span className={diagnostics.rttMs === null ? "text-amber-400" : diagnostics.rttMs > 220 ? "text-rose-400" : "text-emerald-400"}>{formatLatency(diagnostics.rttMs)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Route</span><span className="text-slate-500">{diagnostics.route}</span></div>
-              </div>
-            </div>
+            </section>
           </div>
-        </div>
-      </div>
+        </SheetContent>
+      </Sheet>
 
-      {/* Hidden file inputs */}
-      <input ref={fileInputRef} className="hidden" type="file" multiple onChange={(e) => onFilesSelected(e.target.files, "file")} />
-      <input ref={folderInputRef} className="hidden" type="file" multiple onChange={(e) => onFilesSelected(e.target.files, "folder")} />
+      <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <SheetContent side="right" className={sheetClass}>
+          <SheetHeader>
+            <SheetTitle className="text-slate-100">Settings</SheetTitle>
+            <SheetDescription className="text-slate-400">{modeHint}</SheetDescription>
+          </SheetHeader>
+          <div className="space-y-6 px-4 pb-6">
+            <section className="space-y-3">
+              <h2 className={sectionTitle}>Your peer</h2>
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" size="sm" onClick={() => makePeer(true)}>New ID</Button>
+                <Button variant="outline" size="sm" onClick={() => makePeer()}>
+                  <RefreshCw className="size-3.5" /> Reconnect
+                </Button>
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className={sectionTitle}>Peer server</h2>
+              <Select
+                value={mode}
+                onValueChange={(value) => {
+                  setMode(value as "cloud" | "local");
+                  applyModeDefaults(value as "cloud" | "local");
+                }}
+              >
+                <SelectTrigger id="mode-select" aria-label="Peer server">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cloud">Cloud (PeerJS)</SelectItem>
+                  <SelectItem value="local">Local server</SelectItem>
+                </SelectContent>
+              </Select>
+              <label className="block space-y-1 text-xs text-slate-400">
+                <span>Host</span>
+                <Input value={host} onChange={(event) => setHost(event.target.value)} />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block space-y-1 text-xs text-slate-400">
+                  <span>Port</span>
+                  <Input inputMode="numeric" value={port} onChange={(event) => setPort(event.target.value)} />
+                </label>
+                <label className="block space-y-1 text-xs text-slate-400">
+                  <span>Path</span>
+                  <Input value={path} onChange={(event) => setPath(event.target.value)} />
+                </label>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-slate-800 px-3 py-2">
+                <span className="text-sm">Secure (TLS)</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={secure === "true"}
+                  aria-label="Secure connection"
+                  onClick={() => setSecure(secure === "true" ? "false" : "true")}
+                  className={`relative h-6 w-11 rounded-full transition ${secure === "true" ? "bg-cyan-500" : "bg-slate-700"}`}
+                >
+                  <span className={`absolute top-0.5 size-5 rounded-full bg-white transition-all ${secure === "true" ? "left-[22px]" : "left-0.5"}`} />
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">Changes apply the next time you press Reconnect.</p>
+            </section>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <input ref={fileInputRef} className="hidden" type="file" multiple onChange={(event) => onFilesSelected(event.currentTarget, "Files")} />
+      <input ref={folderInputRef} className="hidden" type="file" multiple onChange={(event) => onFilesSelected(event.currentTarget, "Folder")} />
     </div>
   );
 }
