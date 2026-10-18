@@ -7,7 +7,7 @@ export const canHashChunks = () =>
   typeof crypto !== "undefined" && typeof crypto.subtle?.digest === "function";
 
 // digest() copies the bytes synchronously, so the buffer can be reused or sent right away
-export const hashChunk = (data: ArrayBuffer) => crypto.subtle.digest("SHA-256", data);
+export const hashChunk = (data: Uint8Array<ArrayBuffer>) => crypto.subtle.digest("SHA-256", data);
 
 export const combineChunkHashes = async (hashes: ArrayBuffer[]): Promise<string> => {
   const joined = new Uint8Array(hashes.length * 32);

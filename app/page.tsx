@@ -82,10 +82,14 @@ type InboxItem = {
 // File description shared by file-start and resume-query
 type FileTransferHeader = {
   transferId: string;
+  // Numeric id carried in every binary chunk frame of this file
+  slot: number;
   source: "Files" | "Folder";
   name: string;
   mime: string;
   size: number;
+  // Payload bytes per chunk; fixed for the whole file so resume offsets stay valid
+  chunkSize: number;
   totalChunks: number;
 };
 
@@ -172,12 +176,6 @@ type ControlMessage =
     }
   | ({ kind: "file-start" } & FileTransferHeader)
   | {
-      kind: "file-chunk-meta";
-      transferId: string;
-      index: number;
-      size: number;
-    }
-  | {
       kind: "file-end";
       transferId: string;
       // Chunk-list SHA-256 fingerprint; null when the sender cannot hash
@@ -215,7 +213,6 @@ const CONTROL_KINDS = new Set<ControlMessage["kind"]>([
   "chat-message",
   "transfer-start",
   "file-start",
-  "file-chunk-meta",
   "file-end",
   "resume-query",
   "resume-offset",
@@ -224,13 +221,6 @@ const CONTROL_KINDS = new Set<ControlMessage["kind"]>([
   "call-end",
   "bye",
 ]);
-
-    // Pending metadata for the next raw binary chunk
-type PendingChunkMeta = {
-  transferId: string;
-  index: number;
-  size: number;
-};
 
 // Format raw bytes into a human-friendly size label
 const formatBytes = (bytes: number): string => {
@@ -246,13 +236,30 @@ const formatBytes = (bytes: number): string => {
   return `${scaled.toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
 };
 
-const FILE_CHUNK_SIZE = 64 * 1024;
-const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
+// Every file chunk travels as ONE binary message: a 12-byte header followed by the payload.
+//   byte 0      frame type (FRAME_FILE_CHUNK)
+//   bytes 4-7   transfer slot (uint32, assigned by the sender in file-start)
+//   bytes 8-11  chunk index (uint32)
+// This replaced a JSON metadata message before every chunk, which doubled the message count.
+const FRAME_HEADER_BYTES = 12;
+const FRAME_FILE_CHUNK = 1;
+// Largest message we use; Chrome negotiates 256 KiB, and bigger messages mean less per-message overhead
+const MAX_FRAME_BYTES = 256 * 1024;
+// Used when the browser does not report the negotiated SCTP message limit
+const FALLBACK_FRAME_BYTES = 64 * 1024;
+const BUFFER_HIGH_WATERMARK = 4 * 1024 * 1024;
 // Sending resumes once the outbound buffer drains to this level (event-driven, so it keeps
 // working in background tabs where timers are throttled to once per second or slower)
-const BUFFER_LOW_WATERMARK = FILE_CHUNK_SIZE * 16;
+const BUFFER_LOW_WATERMARK = 2 * 1024 * 1024;
+// Files sent but not yet acknowledged; acks are awaited in the background so a folder of small
+// files is not paced by one round-trip per file
+const MAX_UNCONFIRMED_FILES = 16;
 // Re-render progress at most this often per transfer
 const UI_UPDATE_INTERVAL_MS = 200;
+// All list/log state changes are batched into one React update this often
+const UI_FLUSH_INTERVAL_MS = 100;
+// A first connection attempt that has not opened by then is reported as failed
+const CONNECT_TIMEOUT_MS = 20000;
 const RATE_SAMPLE_INTERVAL_MS = 500;
 // How long transfers wait for a dropped peer to come back before failing
 const RECONNECT_WINDOW_MS = 2 * 60 * 1000;
@@ -297,14 +304,48 @@ class ReplyTimeoutError extends Error {
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 // Copy only the file description out of a file-start / resume-query message
-const toTransferHeader = ({ transferId, source, name, mime, size, totalChunks }: FileTransferHeader): FileTransferHeader => ({
+const toTransferHeader = ({ transferId, slot, source, name, mime, size, chunkSize, totalChunks }: FileTransferHeader): FileTransferHeader => ({
   transferId,
+  slot,
   source,
   name,
   mime,
   size,
+  chunkSize,
   totalChunks,
 });
+
+// Chunk payload size for this link: as large as the negotiated SCTP message limit allows
+const pickChunkSize = (peerConnection: RTCPeerConnection | null): number => {
+  const negotiated = peerConnection?.sctp?.maxMessageSize;
+  // 0 means "no limit" per spec; undefined/null means the browser does not say
+  const limit = negotiated === 0 ? MAX_FRAME_BYTES : Math.min(negotiated || FALLBACK_FRAME_BYTES, MAX_FRAME_BYTES);
+  return Math.floor((limit - FRAME_HEADER_BYTES) / 1024) * 1024;
+};
+
+// Read one chunk as a ready-to-send frame; the Blob join lets the browser fill one buffer in one pass
+const readChunkFrame = async (file: File, slot: number, index: number, chunkSize: number) => {
+  const header = new Uint8Array(FRAME_HEADER_BYTES);
+  const view = new DataView(header.buffer);
+  view.setUint8(0, FRAME_FILE_CHUNK);
+  view.setUint32(4, slot);
+  view.setUint32(8, index);
+
+  const offset = index * chunkSize;
+  const frame = new Uint8Array(await new Blob([header, file.slice(offset, Math.min(offset + chunkSize, file.size))]).arrayBuffer());
+  return { frame, payload: frame.subarray(FRAME_HEADER_BYTES) };
+};
+
+let nextTransferSlot = 1;
+
+// Merge queued partial updates into list rows by id
+const applyPatches = <T extends { id: string }>(items: T[], patches: Map<string, Partial<T>>): T[] =>
+  patches.size === 0
+    ? items
+    : items.map((item) => {
+        const patch = patches.get(item.id);
+        return patch ? { ...item, ...patch } : item;
+      });
 
 // Convert RTT values as readable string for diagnostics panel (Connection Diagnostics)
 const formatLatency = (rttMs: number | null): string => {
@@ -535,6 +576,7 @@ export default function Home() {
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [trustedPeers, setTrustedPeers] = useState<string[]>([]);
   const [reconnecting, setReconnecting] = useState<ReconnectStatus | null>(null);
+  const [connecting, setConnecting] = useState<string | null>(null);
   const [sendBatchId, setSendBatchId] = useState<string | null>(null);
   const [incomingBatch, setIncomingBatch] = useState<IncomingBatch | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
@@ -572,7 +614,8 @@ export default function Home() {
   const sendingItemsRef = useRef<OutgoingItem[]>([]);
   const cancelledIncomingTransfersRef = useRef<Set<string>>(new Set());
   const cancelledOutgoingTransfersRef = useRef<Set<string>>(new Set());
-  const pendingChunkMetaRef = useRef<PendingChunkMeta | null>(null);
+  // Binary frame slot -> transferId for incoming files
+  const incomingSlotsRef = useRef<Map<number, string>>(new Map());
   const incomingBatchRef = useRef<IncomingBatch | null>(null);
   // Finished incoming transfers: checksum result, kept so a late resume-query can be answered
   const completedIncomingRef = useRef<Map<string, boolean | null>>(new Map());
@@ -591,6 +634,9 @@ export default function Home() {
   const reconnectLoopRef = useRef<{ peerId: string; attempt: number; startedAt: number; timer: number | null; pending: DataConnection | null } | null>(null);
   const wireConnectionRef = useRef<(conn: DataConnection, initiator: boolean) => void>(() => undefined);
   const autoConnectDoneRef = useRef(false);
+  // First connection attempt in progress (not a reconnect), so it can time out with a clear reason
+  const connectAttemptRef = useRef<{ peerId: string; conn: DataConnection; timer: number; fail: (reason: string) => void } | null>(null);
+  const connectToTargetRef = useRef<(peerId: string) => void>(() => undefined);
 
   // Preloaded settings on web
   const modeHint = useMemo(
@@ -606,11 +652,59 @@ export default function Home() {
     return buildShareLink(myId);
   }, [myId]);
 
+  // Pending UI changes. A folder of small files fires several events per file; applying them
+  // together keeps it to one re-render per UI_FLUSH_INTERVAL_MS instead of several per file.
+  const uiPendingRef = useRef({
+    logs: [] as LogRow[],
+    inboxAdds: [] as InboxItem[],
+    inboxPatches: new Map<string, Partial<InboxItem>>(),
+    outgoingPatches: new Map<string, Partial<OutgoingItem>>(),
+    queueRemovals: new Set<string>(),
+  });
+  const uiFlushTimerRef = useRef<number | null>(null);
+
+  const flushUi = useCallback(() => {
+    uiFlushTimerRef.current = null;
+    const pending = uiPendingRef.current;
+
+    if (pending.logs.length > 0) {
+      const rows = pending.logs;
+      pending.logs = [];
+      setLogs((prev) => [...prev, ...rows]);
+    }
+
+    if (pending.inboxAdds.length > 0 || pending.inboxPatches.size > 0) {
+      // Newest first, matching the order rows used to be prepended in
+      const adds = pending.inboxAdds.reverse();
+      const patches = pending.inboxPatches;
+      pending.inboxAdds = [];
+      pending.inboxPatches = new Map();
+      setInboxItems((prev) => applyPatches([...adds, ...prev], patches));
+    }
+
+    if (pending.outgoingPatches.size > 0) {
+      const patches = pending.outgoingPatches;
+      pending.outgoingPatches = new Map();
+      setSendingItems((prev) => applyPatches(prev, patches));
+    }
+
+    if (pending.queueRemovals.size > 0) {
+      const removals = pending.queueRemovals;
+      pending.queueRemovals = new Set();
+      setQueue((prev) => prev.filter((item) => !removals.has(item.id)));
+    }
+  }, []);
+
+  const scheduleUiFlush = useCallback(() => {
+    uiFlushTimerRef.current ??= window.setTimeout(flushUi, UI_FLUSH_INTERVAL_MS);
+  }, [flushUi]);
+
   const pushLog = useCallback((line: string, error = false) => {
     const stamp = new Date().toLocaleTimeString();
     const text = `[${stamp}] ${line}`;
-    setLogs((prev) => [...prev, { id: Date.now() + Math.random(), text, error }]);
-  }, []);
+    uiPendingRef.current.logs.push({ id: Date.now() + Math.random(), text, error });
+    scheduleUiFlush();
+  }, [scheduleUiFlush]);
 
   // Camera and mic toggle
   const stopStream = useCallback((stream: MediaStream | null) => {
@@ -802,12 +896,16 @@ export default function Home() {
   }, [clearMediaStreams, sendControlMessage, stopAudioMeter, stopStream]);
 
   const patchInboxItem = useCallback((id: string, patch: Partial<InboxItem>) => {
-    setInboxItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
-  }, []);
+    const patches = uiPendingRef.current.inboxPatches;
+    patches.set(id, { ...patches.get(id), ...patch });
+    scheduleUiFlush();
+  }, [scheduleUiFlush]);
 
   const patchOutgoingItem = useCallback((id: string, patch: Partial<OutgoingItem>) => {
-    setSendingItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
-  }, []);
+    const patches = uiPendingRef.current.outgoingPatches;
+    patches.set(id, { ...patches.get(id), ...patch });
+    scheduleUiFlush();
+  }, [scheduleUiFlush]);
 
   // Wait for a specific control reply ("resume:<id>" or "ack:<id>") from the peer
   const awaitReply = useCallback(
@@ -933,7 +1031,7 @@ export default function Home() {
       id: header.transferId,
       receivedBytes: 0,
       nextIndex: 0,
-      sink: createReceiveSink(header.transferId, FILE_CHUNK_SIZE),
+      sink: createReceiveSink(header.transferId, header.chunkSize, header.size),
       chunkHashes: [],
       startedAt: Date.now(),
       rate: createRateTracker(),
@@ -942,28 +1040,27 @@ export default function Home() {
       finalizing: null,
     };
     activeInboxTransfersRef.current.set(header.transferId, transfer);
+    incomingSlotsRef.current.set(header.slot, header.transferId);
 
-    setInboxItems((prev) => [
-      {
-        id: header.transferId,
-        source: header.source,
-        name: header.name,
-        size: header.size,
-        mime: header.mime,
-        url: "",
-        progress: 0,
-        rate: 0,
-        eta: null,
-        status: "receiving",
-        verified: null,
-        batchId,
-        complete: false,
-      },
-      ...prev,
-    ]);
+    uiPendingRef.current.inboxAdds.push({
+      id: header.transferId,
+      source: header.source,
+      name: header.name,
+      size: header.size,
+      mime: header.mime,
+      url: "",
+      progress: 0,
+      rate: 0,
+      eta: null,
+      status: "receiving",
+      verified: null,
+      batchId,
+      complete: false,
+    });
+    scheduleUiFlush();
 
     return transfer;
-  }, []);
+  }, [scheduleUiFlush]);
 
   // Give up on an incoming file (storage error) and tell the sender to stop
   const failIncomingTransfer = useCallback((transferId: string, reason: string) => {
@@ -992,7 +1089,7 @@ export default function Home() {
         if (blob.size !== transfer.size) {
           verified = false;
         } else if (expectedHash && canHashChunks()) {
-          const chunkCount = Math.ceil(transfer.size / FILE_CHUNK_SIZE);
+          const chunkCount = Math.ceil(transfer.size / transfer.chunkSize);
           const actual = await combineChunkHashes(await Promise.all(transfer.chunkHashes.slice(0, chunkCount)));
           verified = actual === expectedHash;
         }
@@ -1202,6 +1299,9 @@ export default function Home() {
     // Free the disk space used by finished files
     completedSinksRef.current.forEach((sink) => void sink.discard());
     completedSinksRef.current.clear();
+    // Rows still waiting for the next UI flush belong to the inbox being cleared
+    uiPendingRef.current.inboxAdds = [];
+    uiPendingRef.current.inboxPatches.clear();
     incomingBatchRef.current = null;
     setIncomingBatch(null);
     setInboxItems([]);
@@ -1216,6 +1316,19 @@ export default function Home() {
       }
     }
   }, [failIncomingTransfer]);
+
+  // Abandon a first connection attempt that has not opened yet
+  const cancelConnectAttempt = useCallback(() => {
+    const attempt = connectAttemptRef.current;
+    if (attempt) {
+      window.clearTimeout(attempt.timer);
+      connectAttemptRef.current = null;
+      if (attempt.conn !== activeConnRef.current) {
+        attempt.conn.close();
+      }
+    }
+    setConnecting(null);
+  }, []);
 
   // Stop dialing or waiting for a dropped peer
   const stopReconnectLoop = useCallback(() => {
@@ -1300,7 +1413,6 @@ export default function Home() {
 
       lastPeerRef.current = { peerId: conn.peer, initiator };
       remoteByeRef.current = false;
-      pendingChunkMetaRef.current = null;
       stopReconnectLoop();
       setConnState(`Connected to ${conn.peer}`);
       pushLog(`Connection opened with ${conn.peer}`);
@@ -1362,19 +1474,9 @@ export default function Home() {
             return;
           }
 
-          if (control.kind === "file-chunk-meta") {
-            pendingChunkMetaRef.current = {
-              transferId: control.transferId,
-              index: control.index,
-              size: control.size,
-            };
-            return;
-          }
-
           if (control.kind === "file-end") {
             if (cancelledIncomingTransfersRef.current.has(control.transferId)) {
               activeInboxTransfersRef.current.delete(control.transferId);
-              pendingChunkMetaRef.current = null;
               return;
             }
 
@@ -1474,30 +1576,36 @@ export default function Home() {
           return;
         }
 
-        const meta = pendingChunkMetaRef.current;
+        // Binary frame: 12-byte header (type, slot, index) + chunk payload
         const buffer = extractArrayBuffer(data);
-
-        if (!meta || !buffer) {
-          pushLog("Received binary payload without chunk metadata.", true);
+        if (!buffer || buffer.byteLength < FRAME_HEADER_BYTES) {
+          pushLog("Received an unrecognized binary message.", true);
           return;
         }
 
-        const transfer = activeInboxTransfersRef.current.get(meta.transferId);
+        const view = new DataView(buffer);
+        if (view.getUint8(0) !== FRAME_FILE_CHUNK) {
+          pushLog("Received an unrecognized binary message.", true);
+          return;
+        }
+
+        const transferId = incomingSlotsRef.current.get(view.getUint32(4));
+        const index = view.getUint32(8);
+        const transfer = transferId ? activeInboxTransfersRef.current.get(transferId) : undefined;
         if (!transfer) {
-          if (!cancelledIncomingTransfersRef.current.has(meta.transferId)) {
+          if (!transferId || !cancelledIncomingTransfersRef.current.has(transferId)) {
             pushLog("Received file chunk for unknown transfer.", true);
           }
-          pendingChunkMetaRef.current = null;
           return;
         }
 
-        transfer.sink.write(meta.index, buffer);
+        const payload = new Uint8Array(buffer, FRAME_HEADER_BYTES);
+        transfer.sink.write(index, payload);
         if (canHashChunks()) {
-          transfer.chunkHashes[meta.index] = hashChunk(buffer);
+          transfer.chunkHashes[index] = hashChunk(payload);
         }
-        transfer.nextIndex = Math.max(transfer.nextIndex, meta.index + 1);
-        transfer.receivedBytes = Math.min(transfer.nextIndex * FILE_CHUNK_SIZE, transfer.size);
-        pendingChunkMetaRef.current = null;
+        transfer.nextIndex = Math.max(transfer.nextIndex, index + 1);
+        transfer.receivedBytes = Math.min(transfer.nextIndex * transfer.chunkSize, transfer.size);
 
         const storageError = transfer.sink.error();
         if (storageError) {
@@ -1517,7 +1625,6 @@ export default function Home() {
         }
 
         activeConnRef.current = null;
-        pendingChunkMetaRef.current = null;
         endActiveCall("disconnect", false);
         setConnState("Not connected");
         rejectReplies(new ConnectionLostError());
@@ -1588,6 +1695,7 @@ export default function Home() {
 
       // Drop the current link first so its close handler does not try to reconnect
       stopReconnectLoop();
+      cancelConnectAttempt();
       lastPeerRef.current = null;
       activeConnRef.current = null;
 
@@ -1618,10 +1726,12 @@ export default function Home() {
                 "stun:stun.cloudflare.com:3478",
               ],
             },
+            // Comma-separated, e.g. "turn:host:3478?transport=udp,turns:host:443?transport=tcp"
+            // (TURN over TLS on 443 gets through most corporate/school firewalls)
             ...(process.env.NEXT_PUBLIC_TURN_URL
               ? [
                   {
-                    urls: process.env.NEXT_PUBLIC_TURN_URL,
+                    urls: process.env.NEXT_PUBLIC_TURN_URL.split(",").map((url) => url.trim()).filter(Boolean),
                     username: process.env.NEXT_PUBLIC_TURN_USERNAME,
                     credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
                   },
@@ -1654,8 +1764,7 @@ export default function Home() {
         if (!autoConnectDoneRef.current && linkedPeer && linkedPeer !== id) {
           autoConnectDoneRef.current = true;
           pushLog(`Connecting to ${linkedPeer} from share link…`);
-          const conn = peer.connect(linkedPeer, DATA_CONNECTION_OPTIONS);
-          conn.on("open", () => wireConnectionRef.current(conn, true));
+          connectToTargetRef.current(linkedPeer);
         }
       });
 
@@ -1714,9 +1823,17 @@ export default function Home() {
           return;
         }
 
-        // Expected while redialing a peer that has not come back yet
-        if ((err as { type?: string }).type === "peer-unavailable" && reconnectLoopRef.current) {
-          return;
+        if ((err as { type?: string }).type === "peer-unavailable") {
+          // The signalling server knows nobody with that ID: fail fast instead of waiting for the timeout
+          const attempt = connectAttemptRef.current;
+          if (attempt) {
+            attempt.fail(`${attempt.peerId} is offline or the ID is wrong.`);
+            return;
+          }
+          // Expected while redialing a peer that has not come back yet
+          if (reconnectLoopRef.current) {
+            return;
+          }
         }
 
         pushLog(`Peer error: ${err.type || ""} ${err.message || err}`.trim(), true);
@@ -1724,7 +1841,7 @@ export default function Home() {
     };
 
     connectWithId();
-  }, [abortSession, endActiveCall, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, stopReconnectLoop]);
+  }, [abortSession, cancelConnectAttempt, endActiveCall, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, stopReconnectLoop]);
 
   // Apply the cloud or local defaults when the mode changes
   const applyModeDefaults = useCallback(
@@ -1758,14 +1875,54 @@ export default function Home() {
     }
 
     stopReconnectLoop();
+    cancelConnectAttempt();
+    setConnecting(trimmed);
+
     const conn = peerRef.current.connect(trimmed, DATA_CONNECTION_OPTIONS);
-    conn.on("open", () => wireConnection(conn, true));
-  }, [pushLog, stopReconnectLoop, targetId, wireConnection]);
+    const noPathHint = process.env.NEXT_PUBLIC_TURN_URL
+      ? "The relay (TURN) server could not be reached either."
+      : "One of the networks probably blocks direct peer-to-peer links; configuring a TURN relay (NEXT_PUBLIC_TURN_URL) fixes this.";
+    const fail = (reason: string) => {
+      if (connectAttemptRef.current?.conn !== conn) {
+        return;
+      }
+      window.clearTimeout(connectAttemptRef.current.timer);
+      connectAttemptRef.current = null;
+      setConnecting(null);
+      conn.close();
+      pushLog(reason, true);
+    };
+
+    connectAttemptRef.current = {
+      peerId: trimmed,
+      conn,
+      fail,
+      timer: window.setTimeout(() => fail(`Could not reach ${trimmed} within ${CONNECT_TIMEOUT_MS / 1000}s. ${noPathHint}`), CONNECT_TIMEOUT_MS),
+    };
+
+    conn.on("iceStateChanged", (state) => {
+      if (state === "failed") {
+        fail(`No network path to ${trimmed}. ${noPathHint}`);
+      }
+    });
+    conn.on("open", () => {
+      if (connectAttemptRef.current?.conn === conn) {
+        window.clearTimeout(connectAttemptRef.current.timer);
+        connectAttemptRef.current = null;
+        setConnecting(null);
+      }
+      wireConnection(conn, true);
+    });
+  }, [cancelConnectAttempt, pushLog, stopReconnectLoop, targetId, wireConnection]);
+
+  useEffect(() => {
+    connectToTargetRef.current = connectToTarget;
+  }, [connectToTarget]);
 
   // Close current connection (or stop reconnecting) and reset UI state
   const disconnectFromTarget = useCallback(() => {
     const conn = activeConnRef.current;
-    if (!conn && !reconnectLoopRef.current) {
+    if (!conn && !reconnectLoopRef.current && !connectAttemptRef.current) {
       pushLog("No active connection to disconnect.", true);
       return;
     }
@@ -1775,6 +1932,7 @@ export default function Home() {
     }
 
     stopReconnectLoop();
+    cancelConnectAttempt();
     lastPeerRef.current = null;
     // Cleared before closing so the close handler treats this as intentional
     activeConnRef.current = null;
@@ -1797,7 +1955,7 @@ export default function Home() {
 
     setConnState("Not connected");
     pushLog("Disconnected from peer.");
-  }, [abortSession, endActiveCall, failAllIncoming, pushLog, sendControlMessage, stopReconnectLoop]);
+  }, [abortSession, cancelConnectAttempt, endActiveCall, failAllIncoming, pushLog, sendControlMessage, stopReconnectLoop]);
 
   // Send chat line that currently typed into input box
   const sendCurrentMessage = useCallback(() => {
@@ -1823,21 +1981,24 @@ export default function Home() {
   }, [message, pushLog, requireConnection, sendControlMessage, sender]);
 
   // Send one file, pausing through dropped connections and resuming where the receiver left off.
+  // Calls onTransmitted once every chunk and the file-end are on the wire, so the caller can start
+  // the next file while this one waits for its acknowledgement.
   // Resolves with the receiver's checksum result (true / false, or null when it was not checked).
   const sendOneFile = useCallback(
-    async (item: QueueItem, transferId: string, peerId: string, signal: AbortSignal): Promise<boolean | null> => {
+    async (
+      item: QueueItem,
+      transferId: string,
+      peerId: string,
+      signal: AbortSignal,
+      onTransmitted: () => void
+    ): Promise<boolean | null> => {
       const { file } = item;
       const size = file.size;
       const mime = file.type || "application/octet-stream";
-      const header: FileTransferHeader = {
-        transferId,
-        source: item.source,
-        name: item.path,
-        mime,
-        size,
-        totalChunks: Math.max(1, Math.ceil(size / FILE_CHUNK_SIZE)),
-      };
-      const chunkCount = Math.ceil(size / FILE_CHUNK_SIZE);
+      const slot = nextTransferSlot++;
+      // Fixed when the file is announced, from that link's negotiated message size
+      let header: FileTransferHeader | null = null;
+      let chunkCount = 0;
       const hashing = canHashChunks();
       const chunkHashes: Promise<ArrayBuffer>[] = [];
       const transfer: ActiveOutgoingTransfer = { id: transferId, size, sentBytes: 0, rate: createRateTracker(), lastUiAt: 0 };
@@ -1853,15 +2014,15 @@ export default function Home() {
       };
 
       const finish = (verified: boolean | null) => {
+        onTransmitted();
         patchOutgoingItem(transferId, { status: "done", complete: true, progress: 1, eta: null, verified });
         return verified;
       };
 
-      if (isLikelyCompressed(header.name, mime)) {
-        pushLog(`Skipping app-level compression for ${header.name}; file is already compressed or media.`);
+      if (isLikelyCompressed(item.path, mime)) {
+        pushLog(`Skipping app-level compression for ${item.path}; file is already compressed or media.`);
       }
 
-      let announced = false;
       let resumeAttempts = 0;
 
       try {
@@ -1878,9 +2039,20 @@ export default function Home() {
 
           try {
             let startIndex = 0;
-            if (!announced) {
+            if (!header) {
+              const chunkSize = pickChunkSize(getRtcPeerConnection(conn));
+              chunkCount = Math.ceil(size / chunkSize);
+              header = {
+                transferId,
+                slot,
+                source: item.source,
+                name: item.path,
+                mime,
+                size,
+                chunkSize,
+                totalChunks: Math.max(1, chunkCount),
+              };
               sendControlMessage(conn, { kind: "file-start", ...header });
-              announced = true;
             } else {
               // Ask the receiver how much it already has
               resumeAttempts += 1;
@@ -1898,31 +2070,34 @@ export default function Home() {
                 return finish(reply.verified ?? null);
               }
               startIndex = Math.min(Math.max(reply.nextIndex, 0), chunkCount);
-              pushLog(`Resuming ${header.name} from ${formatBytes(Math.min(startIndex * FILE_CHUNK_SIZE, size))}.`);
+              pushLog(`Resuming ${header.name} from ${formatBytes(Math.min(startIndex * header.chunkSize, size))}.`);
             }
 
-            const startBytes = Math.min(startIndex * FILE_CHUNK_SIZE, size);
+            const { chunkSize } = header;
+            const startBytes = Math.min(startIndex * chunkSize, size);
             transfer.rate = createRateTracker(startBytes);
             patchOutgoingItem(transferId, { status: "sending" });
             updateOutgoingTransferProgress(transferId, startBytes, true);
 
+            // Read-ahead: the next chunk is read from disk while the current one is being sent
+            const readAhead = (index: number) => {
+              const pending = readChunkFrame(file, slot, index, chunkSize);
+              pending.catch(() => undefined);
+              return pending;
+            };
+            let nextFrame = startIndex < chunkCount ? readAhead(startIndex) : null;
+
             for (let index = startIndex; index < chunkCount; index += 1) {
               checkStillWanted();
-              const offset = index * FILE_CHUNK_SIZE;
-              const data = await file.slice(offset, Math.min(offset + FILE_CHUNK_SIZE, size)).arrayBuffer();
+              const { frame, payload } = await nextFrame!;
+              nextFrame = index + 1 < chunkCount ? readAhead(index + 1) : null;
               if (hashing) {
-                chunkHashes[index] = hashChunk(data);
+                chunkHashes[index] = hashChunk(payload);
               }
 
               await waitForBufferedDrain(conn);
-              sendControlMessage(conn, {
-                kind: "file-chunk-meta",
-                transferId,
-                index,
-                size: data.byteLength,
-              });
-              conn.send(data);
-              updateOutgoingTransferProgress(transferId, offset + data.byteLength);
+              conn.send(frame);
+              updateOutgoingTransferProgress(transferId, index * chunkSize + payload.byteLength);
             }
 
             const hash = hashing ? await combineChunkHashes(await Promise.all(chunkHashes.slice(0, chunkCount))) : null;
@@ -1931,6 +2106,7 @@ export default function Home() {
 
             const pendingAck = awaitReply(`ack:${transferId}`, ACK_TIMEOUT_MS);
             sendControlMessage(conn, { kind: "file-end", transferId, hash });
+            onTransmitted();
             try {
               const ack = await pendingAck;
               return finish(ack.kind === "file-ack" ? ack.verified : null);
@@ -1955,6 +2131,7 @@ export default function Home() {
     },
     [
       awaitReply,
+      getRtcPeerConnection,
       isLikelyCompressed,
       patchOutgoingItem,
       pushLog,
@@ -1965,7 +2142,9 @@ export default function Home() {
     ]
   );
 
-  // Send a batch; every file gets a row up front so overall progress is visible
+  // Send a batch; every file gets a row up front so overall progress is visible.
+  // Files are transmitted one after another, but each one's acknowledgement is awaited in the
+  // background (up to MAX_UNCONFIRMED_FILES at once) instead of costing a round-trip per file.
   const sendFilePayloads = useCallback(
     async (items: QueueItem[]) => {
       if (!requireConnection()) {
@@ -2015,36 +2194,57 @@ export default function Home() {
       });
 
       let sentCount = 0;
-      for (const [position, { item, transferId }] of planned.entries()) {
-        try {
-          const verified = await sendOneFile(item, transferId, peerId, signal);
-          sentCount += 1;
-          setQueue((prev) => prev.filter((queued) => queued.id !== item.id));
-          const note =
-            verified === true ? ", checksum verified by receiver" : verified === false ? ", CHECKSUM MISMATCH reported by receiver" : "";
-          pushLog(
-            `Sent ${item.source === "Folder" ? "folder file" : "file"}: ${item.path} (${formatBytes(item.file.size)})${note}`,
-            verified === false
-          );
-        } catch (err) {
-          pushLog(`Transfer canceled/failed for ${item.path}: ${err instanceof Error ? err.message : String(err)}`, true);
-          patchOutgoingItem(transferId, { status: "failed", complete: true, eta: null, rate: 0 });
+      let peerGone = false;
+      const unconfirmed = new Set<Promise<void>>();
 
-          // The peer is gone, so the rest of the batch cannot be delivered either
-          if (err instanceof PeerGoneError) {
-            const remaining = new Set(planned.slice(position + 1).map((entry) => entry.transferId));
-            setSendingItems((prev) =>
-              prev.map((row) => (remaining.has(row.id) ? { ...row, status: "failed", complete: true } : row))
+      for (const { item, transferId } of planned) {
+        if (peerGone) {
+          patchOutgoingItem(transferId, { status: "failed", complete: true });
+          continue;
+        }
+
+        let markTransmitted!: () => void;
+        const transmitted = new Promise<void>((resolve) => {
+          markTransmitted = resolve;
+        });
+
+        const settled: Promise<void> = sendOneFile(item, transferId, peerId, signal, markTransmitted)
+          .then((verified) => {
+            sentCount += 1;
+            uiPendingRef.current.queueRemovals.add(item.id);
+            const note =
+              verified === true ? ", checksum verified by receiver" : verified === false ? ", CHECKSUM MISMATCH reported by receiver" : "";
+            pushLog(
+              `Sent ${item.source === "Folder" ? "folder file" : "file"}: ${item.path} (${formatBytes(item.file.size)})${note}`,
+              verified === false
             );
-            break;
-          }
+          })
+          .catch((err: unknown) => {
+            pushLog(`Transfer canceled/failed for ${item.path}: ${err instanceof Error ? err.message : String(err)}`, true);
+            patchOutgoingItem(transferId, { status: "failed", complete: true, eta: null, rate: 0 });
+            // The peer is gone, so the rest of the batch cannot be delivered either
+            if (err instanceof PeerGoneError) {
+              peerGone = true;
+            }
+          })
+          .finally(() => {
+            unconfirmed.delete(settled);
+          });
+        unconfirmed.add(settled);
+
+        // Move on as soon as this file is on the wire (or it ended early)
+        await Promise.race([transmitted, settled]);
+        while (unconfirmed.size >= MAX_UNCONFIRMED_FILES) {
+          await Promise.race(unconfirmed);
         }
       }
 
+      await Promise.all(unconfirmed);
       pushLog(`${label} upload complete. ${sentCount} of ${items.length} item(s) sent successfully.`);
     },
     [patchOutgoingItem, pushLog, requireConnection, sendControlMessage, sendOneFile]
   );
+
   // Start media call
   const startCall = useCallback(
     async (kind: "audio" | "video") => {
@@ -2694,7 +2894,7 @@ export default function Home() {
             <p className="text-xs text-slate-500">Files your peer sends will appear here.</p>
           </div>
         ) : (
-          inboxItems.map((item) => (
+          inboxItems.slice(0, 200).map((item) => (
             <div key={item.id} className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
               {item.source === "Folder" ? (
                 <FolderIcon className="size-4 shrink-0 text-amber-300" />
@@ -2731,6 +2931,9 @@ export default function Home() {
               )}
             </div>
           ))
+        )}
+        {inboxItems.length > 200 && (
+          <p className="py-2 text-center text-xs text-slate-500">+{inboxItems.length - 200} more · use Save all</p>
         )}
       </div>
       <div className="flex gap-2 border-t border-slate-800 p-4">
@@ -2800,6 +3003,14 @@ export default function Home() {
                 )}
               </span>
               <Button variant="destructive" size="sm" onClick={disconnectFromTarget}>Disconnect</Button>
+            </div>
+          ) : connecting && !reconnecting ? (
+            <div className="flex items-center gap-2 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5" role="status">
+              <LoaderCircle className="size-4 shrink-0 animate-spin text-cyan-300" />
+              <span className="min-w-0 flex-1 truncate text-sm">
+                Connecting to <span className="font-mono font-semibold">{connecting}</span>…
+              </span>
+              <Button variant="outline" size="sm" onClick={disconnectFromTarget}>Cancel</Button>
             </div>
           ) : reconnecting ? (
             <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5" role="status">

@@ -1,11 +1,14 @@
 // Receiver-side storage for incoming files.
-// Chunks are streamed into the Origin Private File System (OPFS) when the browser supports it,
-// so large files never have to fit in memory. Older browsers fall back to keeping chunks in RAM.
+// Large files are streamed into the Origin Private File System (OPFS) when the browser supports it,
+// so they never have to fit in memory. Small files (and browsers without OPFS) are kept in RAM,
+// which avoids a file create/close round-trip per file when a folder of small files arrives.
+
+type Chunk = Uint8Array<ArrayBuffer>;
 
 export type ReceiveSink = {
   readonly onDisk: boolean;
   // Queue a chunk for writing at its index; writes are applied in call order
-  write: (index: number, data: ArrayBuffer) => void;
+  write: (index: number, data: Chunk) => void;
   // Flush everything and return the finished file
   finish: (mime: string) => Promise<Blob>;
   // Drop the data (and the OPFS file, if any)
@@ -37,7 +40,7 @@ const getInboxDirectory = async () => {
 };
 
 const createMemorySink = (): ReceiveSink => {
-  let chunks: ArrayBuffer[] = [];
+  let chunks: Chunk[] = [];
 
   return {
     onDisk: false,
@@ -61,7 +64,7 @@ const createDiskSink = (transferId: string, chunkSize: number): ReceiveSink => {
   let handle: FileSystemFileHandle | null = null;
   let writable: FileSystemWritableFileStream | null = null;
   let pendingStart = 0;
-  let pendingParts: ArrayBuffer[] = [];
+  let pendingParts: Chunk[] = [];
   let pendingBytes = 0;
 
   let chain: Promise<void> = (async () => {
@@ -143,5 +146,8 @@ const createDiskSink = (transferId: string, chunkSize: number): ReceiveSink => {
   };
 };
 
-export const createReceiveSink = (transferId: string, chunkSize: number): ReceiveSink =>
-  supportsDiskSink() ? createDiskSink(transferId, chunkSize) : createMemorySink();
+// Files up to this size stay in memory; creating and closing an OPFS file costs more than it saves
+const MEMORY_SINK_MAX_BYTES = 16 * 1024 * 1024;
+
+export const createReceiveSink = (transferId: string, chunkSize: number, fileSize: number): ReceiveSink =>
+  fileSize > MEMORY_SINK_MAX_BYTES && supportsDiskSink() ? createDiskSink(transferId, chunkSize) : createMemorySink();
