@@ -3,6 +3,7 @@
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import Peer, { DataConnection, MediaConnection } from "peerjs";
 import JSZip from "jszip";
+import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/animate-ui/components/radix/tabs";
@@ -11,6 +12,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Input } from "@/components/animate-ui/primitives/radix/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/animate-ui/primitives/radix/select";
 import { supabase } from "@/lib/supabase";
+import { createReceiveSink, type ReceiveSink } from "@/lib/receive-sink";
+import { canHashChunks, combineChunkHashes, hashChunk } from "@/lib/chunk-hash";
 import {
   ArrowUpFromLine,
   Check,
@@ -20,19 +23,24 @@ import {
   FolderIcon,
   FolderUp,
   Link2,
+  LoaderCircle,
   MessageSquare,
   Mic,
   MicOff,
   Phone,
   PhoneOff,
+  QrCode,
   RefreshCw,
   ScrollText,
   Settings,
+  ShieldAlert,
+  ShieldCheck,
   Trash2,
   UploadCloud,
   UserRound,
   Video,
   VideoOff,
+  WifiOff,
   X,
 } from "lucide-react";
 
@@ -50,7 +58,9 @@ type SelectionInfo = {
   ready: boolean;
 };
 
-// Inbox entry for a finished incoming transfer
+type TransferStatus = "queued" | "sending" | "receiving" | "waiting" | "verifying" | "done" | "failed";
+
+// Inbox entry for an incoming transfer
 type InboxItem = {
   id: string;
   source: "Files" | "Folder";
@@ -60,12 +70,17 @@ type InboxItem = {
   url: string;
   progress: number;
   rate: number;
+  eta: number | null;
+  status: TransferStatus;
+  // true = checksum matched, false = mismatch, null = not checked
+  verified: boolean | null;
+  batchId: string | null;
+  error?: string;
   complete: boolean;
 };
 
-// Incoming file transfer information
-type FileTransferStart = {
-  kind: "file-start";
+// File description shared by file-start and resume-query
+type FileTransferHeader = {
   transferId: string;
   source: "Files" | "Folder";
   name: string;
@@ -74,30 +89,35 @@ type FileTransferStart = {
   totalChunks: number;
 };
 
+// Smoothed throughput so ETAs follow the current speed instead of the lifetime average
+type RateTracker = {
+  sampleAt: number;
+  sampleBytes: number;
+  rate: number;
+};
+
 // Track a received transfer while chunks are still arriving
-type ActiveInboxTransfer = {
+type ActiveInboxTransfer = FileTransferHeader & {
   id: string;
-  source: "Files" | "Folder";
-  name: string;
-  mime: string;
-  size: number;
   receivedBytes: number;
-  chunks: ArrayBuffer[];
+  // Index of the next chunk expected; also the resume point after a reconnect
+  nextIndex: number;
+  sink: ReceiveSink;
+  chunkHashes: Promise<ArrayBuffer>[];
   startedAt: number;
-  lastTick: number;
-  totalChunks: number;
+  rate: RateTracker;
+  lastUiAt: number;
+  batchId: string | null;
+  finalizing: Promise<boolean | null> | null;
 };
 
 // Track transfer progress
 type ActiveOutgoingTransfer = {
   id: string;
-  source: "Files" | "Folder";
-  name: string;
   size: number;
   sentBytes: number;
-  startedAt: number;
-  lastTick: number;
-  totalChunks: number;
+  rate: RateTracker;
+  lastUiAt: number;
 };
 
 // Progress row displayed for outgoing transfers
@@ -108,7 +128,25 @@ type OutgoingItem = {
   size: number;
   progress: number;
   rate: number;
+  eta: number | null;
+  status: TransferStatus;
+  verified: boolean | null;
+  batchId: string;
   complete: boolean;
+};
+
+// Incoming batch announced by transfer-start
+type IncomingBatch = {
+  id: string;
+  count: number;
+  totalBytes: number;
+};
+
+type ReconnectStatus = {
+  peerId: string;
+  attempt: number;
+  // "dialing" when this side reconnects, "waiting" when the other side is expected to
+  mode: "dialing" | "waiting";
 };
 
 // Live link quality and buffering snapshot for the diagnostics panel
@@ -129,16 +167,10 @@ type ControlMessage =
       kind: "transfer-start";
       label: "Files" | "Folder";
       count: number;
+      totalBytes?: number;
+      batchId?: string;
     }
-  | {
-      kind: "file-start";
-      transferId: string;
-      source: "Files" | "Folder";
-      name: string;
-      mime: string;
-      size: number;
-      totalChunks: number;
-    }
+  | ({ kind: "file-start" } & FileTransferHeader)
   | {
       kind: "file-chunk-meta";
       transferId: string;
@@ -148,6 +180,23 @@ type ControlMessage =
   | {
       kind: "file-end";
       transferId: string;
+      // Chunk-list SHA-256 fingerprint; null when the sender cannot hash
+      hash?: string | null;
+    }
+  // Sender asks where to continue after a reconnect
+  | ({ kind: "resume-query" } & FileTransferHeader)
+  | {
+      kind: "resume-offset";
+      transferId: string;
+      nextIndex: number;
+      complete: boolean;
+      verified?: boolean | null;
+    }
+  // Receiver confirms the file is saved (and whether the checksum matched)
+  | {
+      kind: "file-ack";
+      transferId: string;
+      verified: boolean | null;
     }
   | {
       kind: "transfer-cancel";
@@ -156,7 +205,25 @@ type ControlMessage =
   | {
       kind: "call-end";
       reason: "hangup" | "disconnect";
+    }
+  // Sent before an intentional disconnect so the peer does not try to reconnect
+  | {
+      kind: "bye";
     };
+
+const CONTROL_KINDS = new Set<ControlMessage["kind"]>([
+  "chat-message",
+  "transfer-start",
+  "file-start",
+  "file-chunk-meta",
+  "file-end",
+  "resume-query",
+  "resume-offset",
+  "file-ack",
+  "transfer-cancel",
+  "call-end",
+  "bye",
+]);
 
     // Pending metadata for the next raw binary chunk
 type PendingChunkMeta = {
@@ -181,8 +248,63 @@ const formatBytes = (bytes: number): string => {
 
 const FILE_CHUNK_SIZE = 64 * 1024;
 const BUFFER_HIGH_WATERMARK = FILE_CHUNK_SIZE * 32;
-// Small wait used while the outbound buffer drains
-const BUFFER_CHECK_INTERVAL_MS = 10;
+// Sending resumes once the outbound buffer drains to this level (event-driven, so it keeps
+// working in background tabs where timers are throttled to once per second or slower)
+const BUFFER_LOW_WATERMARK = FILE_CHUNK_SIZE * 16;
+// Re-render progress at most this often per transfer
+const UI_UPDATE_INTERVAL_MS = 200;
+const RATE_SAMPLE_INTERVAL_MS = 500;
+// How long transfers wait for a dropped peer to come back before failing
+const RECONNECT_WINDOW_MS = 2 * 60 * 1000;
+const RECONNECT_DELAYS_MS = [500, 3000, 5000, 8000, 10000];
+// An ICE link stuck in "disconnected" this long is treated as dropped
+const ICE_STALL_MS = 8000;
+const RESUME_REPLY_TIMEOUT_MS = 15000;
+const MAX_RESUME_ATTEMPTS = 5;
+const ACK_TIMEOUT_MS = 2 * 60 * 1000;
+
+const DATA_CONNECTION_OPTIONS = {
+  reliable: true,
+  serialization: "raw",
+  metadata: {
+    transferProfile: "raw-binary-v2",
+  },
+} as const;
+
+// The data channel dropped; the transfer can resume once the peer reconnects
+class ConnectionLostError extends Error {
+  constructor() {
+    super("Connection lost");
+    this.name = "ConnectionLostError";
+  }
+}
+
+// The peer is gone for good (manual disconnect, or it never came back)
+class PeerGoneError extends Error {
+  constructor(message = "Peer disconnected") {
+    super(message);
+    this.name = "PeerGoneError";
+  }
+}
+
+class ReplyTimeoutError extends Error {
+  constructor() {
+    super("Peer did not reply in time");
+    this.name = "ReplyTimeoutError";
+  }
+}
+
+const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Copy only the file description out of a file-start / resume-query message
+const toTransferHeader = ({ transferId, source, name, mime, size, totalChunks }: FileTransferHeader): FileTransferHeader => ({
+  transferId,
+  source,
+  name,
+  mime,
+  size,
+  totalChunks,
+});
 
 // Convert RTT values as readable string for diagnostics panel (Connection Diagnostics)
 const formatLatency = (rttMs: number | null): string => {
@@ -192,31 +314,81 @@ const formatLatency = (rttMs: number | null): string => {
   return `${Math.round(rttMs)} ms`;
 };
 
-type WorkerOutboundMessage =
-  | {
-      type: "prepared-start";
-      transferId: string;
-      source: "Files" | "Folder";
-      name: string;
-      mime: string;
-      size: number;
-      totalChunks: number;
-    }
-  | {
-      type: "prepared-chunk";
-      transferId: string;
-      index: number;
-      data: ArrayBuffer;
-    }
-  | {
-      type: "prepared-end";
-      transferId: string;
-    }
-  | {
-      type: "prepared-error";
-      transferId: string;
-      message: string;
-    };
+// Format remaining seconds as a short "time left" label
+const formatEta = (seconds: number | null): string => {
+  if (seconds === null || !Number.isFinite(seconds)) {
+    return "";
+  }
+
+  const total = Math.max(1, Math.round(seconds));
+  if (total < 60) {
+    return `${total}s left`;
+  }
+  if (total < 3600) {
+    return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s left`;
+  }
+  return `${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m left`;
+};
+
+const createRateTracker = (bytes = 0): RateTracker => ({ sampleAt: Date.now(), sampleBytes: bytes, rate: 0 });
+
+// Exponential moving average of bytes per second
+const sampleRate = (tracker: RateTracker, bytes: number): number => {
+  const now = Date.now();
+  const elapsedMs = now - tracker.sampleAt;
+  if (elapsedMs < RATE_SAMPLE_INTERVAL_MS) {
+    return tracker.rate;
+  }
+
+  const instant = ((bytes - tracker.sampleBytes) / elapsedMs) * 1000;
+  tracker.rate = tracker.rate === 0 ? instant : tracker.rate * 0.7 + instant * 0.3;
+  tracker.sampleAt = now;
+  tracker.sampleBytes = bytes;
+  return tracker.rate;
+};
+
+const estimateSeconds = (remainingBytes: number, rate: number) => (rate > 0 ? remainingBytes / rate : null);
+
+type BatchSummary = {
+  total: number;
+  done: number;
+  failed: number;
+  bytes: number;
+  totalBytes: number;
+  progress: number;
+  eta: number | null;
+  active: boolean;
+};
+
+// Roll individual rows up into "3 of 12 files · 45% · 2m left"
+const summarizeBatch = (
+  items: { size: number; progress: number; rate: number; status: TransferStatus }[],
+  total: number,
+  totalBytes: number
+): BatchSummary => {
+  const done = items.filter((item) => item.status === "done").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const bytes = items.reduce((sum, item) => sum + (item.status === "failed" ? 0 : item.size * item.progress), 0);
+  const rate = items.reduce((sum, item) => sum + (item.status === "sending" || item.status === "receiving" ? item.rate : 0), 0);
+  const progress = totalBytes > 0 ? Math.min(bytes / totalBytes, 1) : done / Math.max(total, 1);
+
+  return {
+    total,
+    done,
+    failed,
+    bytes,
+    totalBytes,
+    progress,
+    eta: estimateSeconds(Math.max(totalBytes - bytes, 0), rate),
+    active: done + failed < total,
+  };
+};
+
+const statusLabel: Partial<Record<TransferStatus, string>> = {
+  queued: "Queued",
+  waiting: "Paused, waiting for peer to reconnect…",
+  verifying: "Verifying…",
+};
 
 type QueueItem = {
   id: string;
@@ -362,6 +534,11 @@ export default function Home() {
   const [authPassword, setAuthPassword] = useState("");
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [trustedPeers, setTrustedPeers] = useState<string[]>([]);
+  const [reconnecting, setReconnecting] = useState<ReconnectStatus | null>(null);
+  const [sendBatchId, setSendBatchId] = useState<string | null>(null);
+  const [incomingBatch, setIncomingBatch] = useState<IncomingBatch | null>(null);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
   // Live connection diagnostics for route and buffer health
   const [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics>({
     dataChannelState: "closed",
@@ -393,16 +570,27 @@ export default function Home() {
   const activeInboxTransfersRef = useRef<Map<string, ActiveInboxTransfer>>(new Map());
   const sendingTransfersRef = useRef<Map<string, ActiveOutgoingTransfer>>(new Map());
   const sendingItemsRef = useRef<OutgoingItem[]>([]);
-  const transferWorkerRef = useRef<Worker | null>(null);
-  const workerQueueRef = useRef<WorkerOutboundMessage[]>([]);
-  const workerQueueRunningRef = useRef(false);
-  // Workspace resize logic removed
   const cancelledIncomingTransfersRef = useRef<Set<string>>(new Set());
   const cancelledOutgoingTransfersRef = useRef<Set<string>>(new Set());
-  const transferPromisesRef = useRef<
-    Map<string, { resolve: () => void; reject: (error: Error) => void }>
-  >(new Map());
   const pendingChunkMetaRef = useRef<PendingChunkMeta | null>(null);
+  const incomingBatchRef = useRef<IncomingBatch | null>(null);
+  // Finished incoming transfers: checksum result, kept so a late resume-query can be answered
+  const completedIncomingRef = useRef<Map<string, boolean | null>>(new Map());
+  // Storage of finished inbox files, discarded when the inbox is cleared
+  const completedSinksRef = useRef<Map<string, ReceiveSink>>(new Map());
+  // Pending replies from the peer, keyed by "resume:<id>" or "ack:<id>"
+  const replyWaitersRef = useRef<
+    Map<string, { resolve: (message: ControlMessage) => void; reject: (error: Error) => void }>
+  >(new Map());
+  // Senders paused until the same peer reconnects
+  const connectionWaitersRef = useRef<Set<(conn: DataConnection) => void>>(new Set());
+  // Aborted on manual disconnect so paused transfers stop waiting
+  const sessionAbortRef = useRef(new AbortController());
+  const lastPeerRef = useRef<{ peerId: string; initiator: boolean } | null>(null);
+  const remoteByeRef = useRef(false);
+  const reconnectLoopRef = useRef<{ peerId: string; attempt: number; startedAt: number; timer: number | null; pending: DataConnection | null } | null>(null);
+  const wireConnectionRef = useRef<(conn: DataConnection, initiator: boolean) => void>(() => undefined);
+  const autoConnectDoneRef = useRef(false);
 
   // Preloaded settings on web
   const modeHint = useMemo(
@@ -524,16 +712,34 @@ export default function Home() {
     return candidate.peerConnection ?? candidate._pc ?? null;
   }, []);
 
-  // Wait until buffered outbound bytes fall back below the safe threshold
+  // Wait until buffered outbound bytes fall back below the safe threshold.
+  // Uses the bufferedamountlow event instead of polling with setTimeout: browsers throttle
+  // timers in background tabs (1/s, then 1/min in Chrome), which used to stall transfers.
   const waitForBufferedDrain = useCallback(
-    async (conn: DataConnection | null) => {
+    async (conn: DataConnection) => {
       const channel = getRtcDataChannel(conn);
-      if (!channel) {
-        return;
+      if (!channel || !conn.open || channel.readyState !== "open") {
+        throw new ConnectionLostError();
+      }
+
+      if (channel.bufferedAmountLowThreshold !== BUFFER_LOW_WATERMARK) {
+        channel.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
       }
 
       while (channel.readyState === "open" && channel.bufferedAmount > BUFFER_HIGH_WATERMARK) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, BUFFER_CHECK_INTERVAL_MS));
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            channel.removeEventListener("bufferedamountlow", done);
+            channel.removeEventListener("close", done);
+            resolve();
+          };
+          channel.addEventListener("bufferedamountlow", done);
+          channel.addEventListener("close", done);
+        });
+      }
+
+      if (channel.readyState !== "open") {
+        throw new ConnectionLostError();
       }
     },
     [getRtcDataChannel]
@@ -572,18 +778,7 @@ export default function Home() {
         return null;
       }
 
-      if (
-        parsed.kind === "chat-message" ||
-        parsed.kind === "transfer-start" ||
-        parsed.kind === "file-start" ||
-        parsed.kind === "file-chunk-meta" ||
-        parsed.kind === "file-end" ||
-        parsed.kind === "transfer-cancel" ||
-        parsed.kind === "call-end"
-      ) {
-        return parsed as ControlMessage;
-      }
-      return null;
+      return CONTROL_KINDS.has(parsed.kind as ControlMessage["kind"]) ? (parsed as ControlMessage) : null;
     } catch {
       return null;
     }
@@ -606,268 +801,263 @@ export default function Home() {
     clearMediaStreams();
   }, [clearMediaStreams, sendControlMessage, stopAudioMeter, stopStream]);
 
-  // Convert finished receiver-side transfer into a downloadable inbox item
-  const flushInboxTransfer = useCallback((transferId: string) => {
-    const transfer = activeInboxTransfersRef.current.get(transferId);
-    if (!transfer) {
-      return;
-    }
-
-    const blob = new Blob(transfer.chunks, { type: transfer.mime });
-    const url = URL.createObjectURL(blob);
-    const elapsedSeconds = Math.max((Date.now() - transfer.startedAt) / 1000, 0.001);
-    const rate = transfer.receivedBytes / elapsedSeconds;
-
-    setInboxItems((prev) => {
-      const exists = prev.some((item) => item.id === transfer.id);
-      if (exists) {
-        return prev.map((item) => (
-          item.id === transfer.id
-            ? {
-                ...item,
-                source: transfer.source,
-                name: transfer.name,
-                size: transfer.size,
-                mime: transfer.mime,
-                url,
-                progress: 1,
-                rate,
-                complete: true,
-              }
-            : item
-        ));
-      }
-
-      return [
-        {
-          id: transfer.id,
-          source: transfer.source,
-          name: transfer.name,
-          size: transfer.size,
-          mime: transfer.mime,
-          url,
-          progress: 1,
-          rate,
-          complete: true,
-        },
-        ...prev,
-      ];
-    });
-
-    activeInboxTransfersRef.current.delete(transferId);
-    pushLog(`Received file ready in inbox: ${transfer.name} (${formatBytes(transfer.size)}).`);
-  }, [pushLog]);
-
-  // Update receiver progress card while chunks are arriving
-  const updateInboxTransferProgress = useCallback((transferId: string) => {
-    const transfer = activeInboxTransfersRef.current.get(transferId);
-    if (!transfer) {
-      return;
-    }
-
-    const elapsedSeconds = Math.max((Date.now() - transfer.startedAt) / 1000, 0.001);
-    const rate = transfer.receivedBytes / elapsedSeconds;
-    const progress = transfer.size > 0 ? Math.min(transfer.receivedBytes / transfer.size, 1) : 0;
-
-    setInboxItems((prev) => prev.map((item) => (
-      item.id === transferId
-        ? { ...item, progress, rate, complete: false, size: transfer.size, mime: transfer.mime, name: transfer.name, source: transfer.source }
-        : item
-    )));
+  const patchInboxItem = useCallback((id: string, patch: Partial<InboxItem>) => {
+    setInboxItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }, []);
 
-  // Seed a sender-side progress card before chunks begin to flow
-  const beginOutgoingTransfer = useCallback(
-    (transferId: string, source: "Files" | "Folder", name: string, size: number, totalChunks: number) => {
-      sendingTransfersRef.current.set(transferId, {
-        id: transferId,
-        source,
-        name,
-        size,
-        sentBytes: 0,
-        startedAt: Date.now(),
-        lastTick: Date.now(),
-        totalChunks,
-      });
+  const patchOutgoingItem = useCallback((id: string, patch: Partial<OutgoingItem>) => {
+    setSendingItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }, []);
 
-      setSendingItems((prev) => [
-        {
-          id: transferId,
-          source,
-          name,
-          size,
-          progress: 0,
-          rate: 0,
-          complete: false,
-        },
-        ...prev,
-      ]);
-    },
+  // Wait for a specific control reply ("resume:<id>" or "ack:<id>") from the peer
+  const awaitReply = useCallback(
+    (key: string, timeoutMs: number) =>
+      new Promise<ControlMessage>((resolve, reject) => {
+        const waiters = replyWaitersRef.current;
+        waiters.get(key)?.reject(new ConnectionLostError());
+
+        const settle = () => {
+          if (waiters.get(key) === entry) {
+            waiters.delete(key);
+          }
+          window.clearTimeout(timer);
+        };
+        const entry = {
+          resolve: (message: ControlMessage) => {
+            settle();
+            resolve(message);
+          },
+          reject: (error: Error) => {
+            settle();
+            reject(error);
+          },
+        };
+
+        waiters.set(key, entry);
+        const timer = window.setTimeout(() => entry.reject(new ReplyTimeoutError()), timeoutMs);
+      }),
     []
   );
 
-  // Update sender progress bar forward after each binary chunk is sent
+  const resolveReply = useCallback((key: string, message: ControlMessage) => {
+    replyWaitersRef.current.get(key)?.resolve(message);
+  }, []);
+
+  // Fail pending replies, either all of them or just one transfer's
+  const rejectReplies = useCallback((error: Error, transferId?: string) => {
+    for (const [key, entry] of Array.from(replyWaitersRef.current)) {
+      if (!transferId || key.endsWith(`:${transferId}`)) {
+        entry.reject(error);
+      }
+    }
+  }, []);
+
+  // Stop every paused transfer: the peer is not coming back
+  const abortSession = useCallback((reason: string) => {
+    sessionAbortRef.current.abort(new PeerGoneError(reason));
+    sessionAbortRef.current = new AbortController();
+    rejectReplies(new PeerGoneError(reason));
+  }, [rejectReplies]);
+
+  // Resolve once the same peer is connected again (immediately if it already is)
+  const waitForConnection = useCallback(
+    (peerId: string, signal: AbortSignal) =>
+      new Promise<DataConnection>((resolve, reject) => {
+        const current = activeConnRef.current;
+        if (current?.open && current.peer === peerId) {
+          resolve(current);
+          return;
+        }
+
+        const abortError = () => (signal.reason instanceof Error ? signal.reason : new PeerGoneError());
+        if (signal.aborted) {
+          reject(abortError());
+          return;
+        }
+
+        const cleanup = () => {
+          connectionWaitersRef.current.delete(onConnection);
+          signal.removeEventListener("abort", onAbort);
+          window.clearTimeout(timer);
+        };
+        const onConnection = (conn: DataConnection) => {
+          if (conn.peer !== peerId) {
+            return;
+          }
+          cleanup();
+          resolve(conn);
+        };
+        const onAbort = () => {
+          cleanup();
+          reject(abortError());
+        };
+        const timer = window.setTimeout(() => {
+          cleanup();
+          reject(new PeerGoneError(`${peerId} did not reconnect within ${RECONNECT_WINDOW_MS / 60000} minutes`));
+        }, RECONNECT_WINDOW_MS);
+
+        connectionWaitersRef.current.add(onConnection);
+        signal.addEventListener("abort", onAbort);
+      }),
+    []
+  );
+
+  // Update receiver progress card while chunks are arriving (throttled)
+  const updateInboxTransferProgress = useCallback((transfer: ActiveInboxTransfer, force = false) => {
+    const rate = sampleRate(transfer.rate, transfer.receivedBytes);
+    const now = Date.now();
+    if (!force && now - transfer.lastUiAt < UI_UPDATE_INTERVAL_MS) {
+      return;
+    }
+
+    transfer.lastUiAt = now;
+    patchInboxItem(transfer.id, {
+      progress: transfer.size > 0 ? Math.min(transfer.receivedBytes / transfer.size, 1) : 0,
+      rate,
+      eta: estimateSeconds(transfer.size - transfer.receivedBytes, rate),
+      status: "receiving",
+    });
+  }, [patchInboxItem]);
+
+  // Create the receiver-side transfer record when a new file starts
+  const beginInboxTransfer = useCallback((header: FileTransferHeader): ActiveInboxTransfer => {
+    cancelledIncomingTransfersRef.current.delete(header.transferId);
+    const existing = activeInboxTransfersRef.current.get(header.transferId);
+    if (existing) {
+      return existing;
+    }
+
+    const batchId = incomingBatchRef.current?.id ?? null;
+    const transfer: ActiveInboxTransfer = {
+      ...header,
+      id: header.transferId,
+      receivedBytes: 0,
+      nextIndex: 0,
+      sink: createReceiveSink(header.transferId, FILE_CHUNK_SIZE),
+      chunkHashes: [],
+      startedAt: Date.now(),
+      rate: createRateTracker(),
+      lastUiAt: 0,
+      batchId,
+      finalizing: null,
+    };
+    activeInboxTransfersRef.current.set(header.transferId, transfer);
+
+    setInboxItems((prev) => [
+      {
+        id: header.transferId,
+        source: header.source,
+        name: header.name,
+        size: header.size,
+        mime: header.mime,
+        url: "",
+        progress: 0,
+        rate: 0,
+        eta: null,
+        status: "receiving",
+        verified: null,
+        batchId,
+        complete: false,
+      },
+      ...prev,
+    ]);
+
+    return transfer;
+  }, []);
+
+  // Give up on an incoming file (storage error) and tell the sender to stop
+  const failIncomingTransfer = useCallback((transferId: string, reason: string) => {
+    const transfer = activeInboxTransfersRef.current.get(transferId);
+    activeInboxTransfersRef.current.delete(transferId);
+    cancelledIncomingTransfersRef.current.add(transferId);
+    void transfer?.sink.discard();
+
+    const conn = activeConnRef.current;
+    if (conn?.open) {
+      sendControlMessage(conn, { kind: "transfer-cancel", transferId });
+    }
+
+    patchInboxItem(transferId, { status: "failed", error: reason, eta: null, rate: 0 });
+    pushLog(`Could not receive ${transfer?.name ?? transferId}: ${reason}`, true);
+  }, [patchInboxItem, pushLog, sendControlMessage]);
+
+  // Close the file, compare checksums, publish it to the inbox and acknowledge to the sender
+  const finalizeInboxTransfer = useCallback(
+    async (transfer: ActiveInboxTransfer, expectedHash: string | null): Promise<boolean | null> => {
+      patchInboxItem(transfer.id, { status: "verifying", progress: 1, eta: null });
+
+      try {
+        const blob = await transfer.sink.finish(transfer.mime);
+        let verified: boolean | null = null;
+        if (blob.size !== transfer.size) {
+          verified = false;
+        } else if (expectedHash && canHashChunks()) {
+          const chunkCount = Math.ceil(transfer.size / FILE_CHUNK_SIZE);
+          const actual = await combineChunkHashes(await Promise.all(transfer.chunkHashes.slice(0, chunkCount)));
+          verified = actual === expectedHash;
+        }
+
+        // The inbox was cleared while the file was being finalized
+        if (cancelledIncomingTransfersRef.current.has(transfer.id)) {
+          await transfer.sink.discard();
+          return null;
+        }
+
+        const elapsedSeconds = Math.max((Date.now() - transfer.startedAt) / 1000, 0.001);
+        const url = URL.createObjectURL(blob);
+        activeInboxTransfersRef.current.delete(transfer.id);
+        completedIncomingRef.current.set(transfer.id, verified);
+        completedSinksRef.current.set(transfer.id, transfer.sink);
+
+        patchInboxItem(transfer.id, {
+          url,
+          progress: 1,
+          rate: transfer.size / elapsedSeconds,
+          eta: null,
+          status: "done",
+          verified,
+          complete: true,
+        });
+
+        const suffix =
+          verified === true ? ", checksum verified" : verified === false ? ", CHECKSUM MISMATCH (file may be corrupted)" : "";
+        pushLog(`Received file ready in inbox: ${transfer.name} (${formatBytes(transfer.size)})${suffix}.`, verified === false);
+
+        const conn = activeConnRef.current;
+        if (conn?.open) {
+          sendControlMessage(conn, { kind: "file-ack", transferId: transfer.id, verified });
+        }
+        return verified;
+      } catch (err) {
+        failIncomingTransfer(transfer.id, err instanceof Error ? err.message : String(err));
+        return null;
+      }
+    },
+    [failIncomingTransfer, patchInboxItem, pushLog, sendControlMessage]
+  );
+
+  // Move the sender progress bar forward after each binary chunk is sent (throttled)
   const updateOutgoingTransferProgress = useCallback(
-    (transferId: string, chunkSize: number) => {
+    (transferId: string, sentBytes: number, force = false) => {
       const transfer = sendingTransfersRef.current.get(transferId);
       if (!transfer) return;
 
-      transfer.sentBytes += chunkSize;
-      const elapsedMs = Math.max(Date.now() - transfer.startedAt, 1);
-      const bytesPerSecond = (transfer.sentBytes / elapsedMs) * 1000;
-      const progress = transfer.sentBytes / transfer.size;
-      const complete = transfer.sentBytes >= transfer.size;
-
-      setSendingItems((prev) =>
-        prev.map((item) =>
-          item.id === transferId
-            ? { ...item, progress, rate: bytesPerSecond, complete }
-            : item
-        )
-      );
-
-      if (complete) {
-        sendingTransfersRef.current.delete(transferId);
-      }
-    },
-    []
-  );
-
-  // Mark an outgoing transfer as complete and keep its final state visible
-  const flushOutgoingTransfer = useCallback((transferId: string) => {
-    sendingTransfersRef.current.delete(transferId);
-    setSendingItems((prev) =>
-      prev.map((item) =>
-        item.id === transferId ? { ...item, complete: true } : item
-      )
-    );
-  }, []);
-
-  // Handle worker output in order so file metadata and raw chunks stay paired
-  const processWorkerMessage = useCallback(
-    async (payload: WorkerOutboundMessage) => {
-      if (cancelledOutgoingTransfersRef.current.has(payload.transferId)) {
-        if (payload.type === "prepared-end" || payload.type === "prepared-error") {
-          transferPromisesRef.current.delete(payload.transferId);
-          sendingTransfersRef.current.delete(payload.transferId);
-        }
+      transfer.sentBytes = sentBytes;
+      const rate = sampleRate(transfer.rate, sentBytes);
+      const now = Date.now();
+      if (!force && now - transfer.lastUiAt < UI_UPDATE_INTERVAL_MS) {
         return;
       }
 
-      if (payload.type === "prepared-error") {
-        transferPromisesRef.current.get(payload.transferId)?.reject(new Error(payload.message));
-        transferPromisesRef.current.delete(payload.transferId);
-        sendingTransfersRef.current.delete(payload.transferId);
-        setSendingItems((prev) => prev.map((item) => (
-          item.id === payload.transferId ? { ...item, complete: true } : item
-        )));
-        pushLog(`Worker error for transfer ${payload.transferId}: ${payload.message}`, true);
-        return;
-      }
-
-      const conn = activeConnRef.current;
-      if (!conn || !conn.open) {
-        transferPromisesRef.current.get(payload.transferId)?.reject(new Error("Connection closed during transfer"));
-        transferPromisesRef.current.delete(payload.transferId);
-        return;
-      }
-
-      if (payload.type === "prepared-start") {
-        sendControlMessage(conn, {
-          kind: "file-start",
-          transferId: payload.transferId,
-          source: payload.source,
-          name: payload.name,
-          mime: payload.mime,
-          size: payload.size,
-          totalChunks: payload.totalChunks,
-        });
-        return;
-      }
-
-      if (payload.type === "prepared-chunk") {
-        await waitForBufferedDrain(conn);
-        sendControlMessage(conn, {
-          kind: "file-chunk-meta",
-          transferId: payload.transferId,
-          index: payload.index,
-          size: payload.data.byteLength,
-        });
-        await waitForBufferedDrain(conn);
-        conn.send(payload.data);
-        updateOutgoingTransferProgress(payload.transferId, payload.data.byteLength);
-        return;
-      }
-
-      if (payload.type === "prepared-end") {
-        await waitForBufferedDrain(conn);
-        sendControlMessage(conn, {
-          kind: "file-end",
-          transferId: payload.transferId,
-        });
-
-        flushOutgoingTransfer(payload.transferId);
-        transferPromisesRef.current.get(payload.transferId)?.resolve();
-        transferPromisesRef.current.delete(payload.transferId);
-      }
-    },
-    [flushOutgoingTransfer, pushLog, sendControlMessage, updateOutgoingTransferProgress, waitForBufferedDrain]
-  );
-
-  // Drain queued worker messages without overlapping send loops
-  const drainWorkerQueue = useCallback(async () => {
-    if (workerQueueRunningRef.current) {
-      return;
-    }
-
-    workerQueueRunningRef.current = true;
-    try {
-      while (workerQueueRef.current.length > 0) {
-        const payload = workerQueueRef.current.shift();
-        if (!payload) {
-          continue;
-        }
-        await processWorkerMessage(payload);
-      }
-    } finally {
-      workerQueueRunningRef.current = false;
-    }
-  }, [processWorkerMessage]);
-
-  // Create the receiver-side transfer record when a new file starts
-  const beginInboxTransfer = useCallback((payload: FileTransferStart) => {
-    cancelledIncomingTransfersRef.current.delete(payload.transferId);
-    const exists = activeInboxTransfersRef.current.get(payload.transferId);
-    if (!exists) {
-      activeInboxTransfersRef.current.set(payload.transferId, {
-        id: payload.transferId,
-        source: payload.source,
-        name: payload.name,
-        mime: payload.mime,
-        size: payload.size,
-        receivedBytes: 0,
-        chunks: [],
-        startedAt: Date.now(),
-        lastTick: Date.now(),
-        totalChunks: payload.totalChunks,
+      transfer.lastUiAt = now;
+      patchOutgoingItem(transferId, {
+        progress: transfer.size > 0 ? Math.min(sentBytes / transfer.size, 1) : 1,
+        rate,
+        eta: estimateSeconds(transfer.size - sentBytes, rate),
       });
-
-      setInboxItems((prev) => [
-        {
-          id: payload.transferId,
-          source: payload.source,
-          name: payload.name,
-          size: payload.size,
-          mime: payload.mime,
-          url: "",
-          progress: 0,
-          rate: 0,
-          complete: false,
-        },
-        ...prev,
-      ]);
-    }
-  }, []);
+    },
+    [patchOutgoingItem]
+  );
 
   // Summarize file selections for the upload status cards
   const summarizeSelection = useCallback((files: File[]): SelectionInfo => {
@@ -1002,22 +1192,116 @@ export default function Home() {
       }
     }
 
+    activeInboxTransfersRef.current.forEach((transfer) => void transfer.sink.discard());
     activeInboxTransfersRef.current.clear();
     inboxItemsRef.current.forEach((item) => {
       if (item.url) {
         URL.revokeObjectURL(item.url);
       }
     });
+    // Free the disk space used by finished files
+    completedSinksRef.current.forEach((sink) => void sink.discard());
+    completedSinksRef.current.clear();
+    incomingBatchRef.current = null;
+    setIncomingBatch(null);
     setInboxItems([]);
     pushLog("Cleared received inbox.");
   }, [pushLog, sendControlMessage]);
 
-  // Remove single inbox item and revoke its download URL
+  // Fail every incoming file that is still waiting for data (the sender is gone)
+  const failAllIncoming = useCallback((reason: string) => {
+    for (const transfer of Array.from(activeInboxTransfersRef.current.values())) {
+      if (!transfer.finalizing) {
+        failIncomingTransfer(transfer.id, reason);
+      }
+    }
+  }, [failIncomingTransfer]);
+
+  // Stop dialing or waiting for a dropped peer
+  const stopReconnectLoop = useCallback(() => {
+    const loop = reconnectLoopRef.current;
+    if (loop) {
+      if (loop.timer !== null) {
+        window.clearTimeout(loop.timer);
+      }
+      if (loop.pending && loop.pending !== activeConnRef.current) {
+        loop.pending.close();
+      }
+      reconnectLoopRef.current = null;
+    }
+    setReconnecting(null);
+  }, []);
+
+  // After an unexpected drop the side that opened the link redials with backoff; the other side
+  // waits for it. Only one side dials so the two peers never race each other with duplicate links.
+  const startReconnectLoop = useCallback(
+    (peerId: string, mode: ReconnectStatus["mode"]) => {
+      stopReconnectLoop();
+      const loop = { peerId, attempt: 0, startedAt: Date.now(), timer: null as number | null, pending: null as DataConnection | null };
+      reconnectLoopRef.current = loop;
+      setReconnecting({ peerId, attempt: 0, mode });
+
+      const giveUp = () => {
+        pushLog(`${peerId} did not come back. Paused transfers were stopped.`, true);
+        stopReconnectLoop();
+        abortSession(`${peerId} did not reconnect`);
+        failAllIncoming("Sender did not reconnect");
+      };
+
+      const tick = () => {
+        loop.timer = null;
+        if (reconnectLoopRef.current !== loop) {
+          return;
+        }
+        if (mode === "waiting" || Date.now() - loop.startedAt >= RECONNECT_WINDOW_MS) {
+          giveUp();
+          return;
+        }
+
+        const peer = peerRef.current;
+        if (!peer || peer.destroyed) {
+          stopReconnectLoop();
+          return;
+        }
+
+        if (peer.disconnected) {
+          // Signalling server first; the dial happens on the next tick
+          try {
+            peer.reconnect();
+          } catch {
+            // Retried on the next tick
+          }
+        } else {
+          loop.attempt += 1;
+          setReconnecting({ peerId, attempt: loop.attempt, mode });
+          loop.pending?.close();
+          const conn = peer.connect(peerId, DATA_CONNECTION_OPTIONS);
+          loop.pending = conn;
+          conn.on("open", () => wireConnectionRef.current(conn, true));
+        }
+
+        loop.timer = window.setTimeout(tick, RECONNECT_DELAYS_MS[Math.min(loop.attempt, RECONNECT_DELAYS_MS.length - 1)]);
+      };
+
+      loop.timer = window.setTimeout(tick, mode === "dialing" ? RECONNECT_DELAYS_MS[0] : RECONNECT_WINDOW_MS);
+    },
+    [abortSession, failAllIncoming, pushLog, stopReconnectLoop]
+  );
 
   // Wire the live data-channel listeners for chat, transfer, and close events
   const wireConnection = useCallback(
-    (conn: DataConnection) => {
+    (conn: DataConnection, initiator: boolean) => {
+      const previous = activeConnRef.current;
       activeConnRef.current = conn;
+      // A replacement link (e.g. after a reconnect) supersedes the old one
+      if (previous && previous !== conn) {
+        previous.close();
+      }
+
+      lastPeerRef.current = { peerId: conn.peer, initiator };
+      remoteByeRef.current = false;
+      pendingChunkMetaRef.current = null;
+      stopReconnectLoop();
       setConnState(`Connected to ${conn.peer}`);
       pushLog(`Connection opened with ${conn.peer}`);
       if (conn.serialization !== "raw") {
@@ -1027,7 +1311,28 @@ export default function Home() {
         );
       }
 
+      // ICE can sit in "disconnected" for a long time before PeerJS closes the link; treat a stall as a drop
+      let iceStallTimer: number | null = null;
+      conn.on("iceStateChanged", (state) => {
+        if (state === "disconnected") {
+          iceStallTimer ??= window.setTimeout(() => {
+            iceStallTimer = null;
+            if (activeConnRef.current === conn) {
+              pushLog("Link stalled, reconnecting…", true);
+              conn.close();
+            }
+          }, ICE_STALL_MS);
+        } else if (iceStallTimer !== null) {
+          window.clearTimeout(iceStallTimer);
+          iceStallTimer = null;
+        }
+      });
+
       conn.on("data", (data) => {
+        if (activeConnRef.current !== conn) {
+          return;
+        }
+
         if (typeof data === "string") {
           const control = parseControlMessage(data);
           if (!control) {
@@ -1043,20 +1348,17 @@ export default function Home() {
           if (control.kind === "transfer-start") {
             const source = control.label === "Folder" ? "Folder" : "Files";
             incomingTransferLabelRef.current = source;
-            pushLog(`Incoming ${source.toLowerCase()} transfer: ${control.count ?? 0} item(s).`);
+            const batch = { id: control.batchId ?? createId(), count: control.count ?? 0, totalBytes: control.totalBytes ?? 0 };
+            incomingBatchRef.current = batch;
+            setIncomingBatch(batch);
+            pushLog(
+              `Incoming ${source.toLowerCase()} transfer: ${batch.count} item(s)${batch.totalBytes ? `, ${formatBytes(batch.totalBytes)}` : ""}.`
+            );
             return;
           }
 
           if (control.kind === "file-start") {
-            beginInboxTransfer({
-              kind: "file-start",
-              transferId: control.transferId,
-              source: control.source,
-              name: control.name,
-              mime: control.mime,
-              size: control.size,
-              totalChunks: control.totalChunks,
-            });
+            beginInboxTransfer(toTransferHeader(control));
             return;
           }
 
@@ -1078,20 +1380,82 @@ export default function Home() {
 
             const transfer = activeInboxTransfersRef.current.get(control.transferId);
             if (!transfer) {
-              pushLog(`Received file end without a matching transfer.`, true);
+              // Already saved: the first acknowledgement was lost in a reconnect
+              if (completedIncomingRef.current.has(control.transferId)) {
+                sendControlMessage(conn, {
+                  kind: "file-ack",
+                  transferId: control.transferId,
+                  verified: completedIncomingRef.current.get(control.transferId) ?? null,
+                });
+              } else {
+                pushLog(`Received file end without a matching transfer.`, true);
+              }
               return;
             }
 
-            flushInboxTransfer(control.transferId);
+            transfer.finalizing ??= finalizeInboxTransfer(transfer, control.hash ?? null);
+            return;
+          }
+
+          if (control.kind === "resume-query") {
+            const { transferId } = control;
+            if (cancelledIncomingTransfersRef.current.has(transferId)) {
+              sendControlMessage(conn, { kind: "transfer-cancel", transferId });
+              return;
+            }
+
+            const replyFinished = () => {
+              const target = activeConnRef.current;
+              if (!target?.open) {
+                return;
+              }
+              if (completedIncomingRef.current.has(transferId)) {
+                sendControlMessage(target, {
+                  kind: "resume-offset",
+                  transferId,
+                  nextIndex: control.totalChunks,
+                  complete: true,
+                  verified: completedIncomingRef.current.get(transferId) ?? null,
+                });
+              } else {
+                sendControlMessage(target, { kind: "transfer-cancel", transferId });
+              }
+            };
+
+            const existing = activeInboxTransfersRef.current.get(transferId);
+            if (completedIncomingRef.current.has(transferId)) {
+              replyFinished();
+              return;
+            }
+            if (existing?.finalizing) {
+              void existing.finalizing.then(replyFinished);
+              return;
+            }
+
+            // Unknown transfer (e.g. this page was reloaded) restarts from zero
+            const transfer = existing ?? beginInboxTransfer(toTransferHeader(control));
+            transfer.rate = createRateTracker(transfer.receivedBytes);
+            updateInboxTransferProgress(transfer, true);
+            sendControlMessage(conn, { kind: "resume-offset", transferId, nextIndex: transfer.nextIndex, complete: false });
+            if (existing) {
+              pushLog(`Resuming ${transfer.name} from ${formatBytes(transfer.receivedBytes)}.`);
+            }
+            return;
+          }
+
+          if (control.kind === "resume-offset") {
+            resolveReply(`resume:${control.transferId}`, control);
+            return;
+          }
+
+          if (control.kind === "file-ack") {
+            resolveReply(`ack:${control.transferId}`, control);
             return;
           }
 
           if (control.kind === "transfer-cancel") {
             cancelledOutgoingTransfersRef.current.add(control.transferId);
-            transferPromisesRef.current.get(control.transferId)?.reject(new Error("Transfer canceled by receiver"));
-            transferPromisesRef.current.delete(control.transferId);
-            sendingTransfersRef.current.delete(control.transferId);
-            setSendingItems((prev) => prev.filter((item) => item.id !== control.transferId));
+            rejectReplies(new Error("Transfer canceled by receiver"), control.transferId);
             pushLog(`Receiver canceled transfer ${control.transferId}.`);
             return;
           }
@@ -1099,6 +1463,11 @@ export default function Home() {
           if (control.kind === "call-end") {
             endActiveCall(control.reason, false);
             pushLog("Call ended by remote peer.");
+            return;
+          }
+
+          if (control.kind === "bye") {
+            remoteByeRef.current = true;
             return;
           }
 
@@ -1122,27 +1491,86 @@ export default function Home() {
           return;
         }
 
-        transfer.chunks.push(buffer);
-        transfer.receivedBytes += buffer.byteLength;
-        transfer.lastTick = Date.now();
+        transfer.sink.write(meta.index, buffer);
+        if (canHashChunks()) {
+          transfer.chunkHashes[meta.index] = hashChunk(buffer);
+        }
+        transfer.nextIndex = Math.max(transfer.nextIndex, meta.index + 1);
+        transfer.receivedBytes = Math.min(transfer.nextIndex * FILE_CHUNK_SIZE, transfer.size);
         pendingChunkMetaRef.current = null;
-        updateInboxTransferProgress(meta.transferId);
+
+        const storageError = transfer.sink.error();
+        if (storageError) {
+          failIncomingTransfer(transfer.id, storageError.message);
+          return;
+        }
+        updateInboxTransferProgress(transfer);
       });
 
       conn.on("close", () => {
-        pushLog("Connection closed");
-        endActiveCall("disconnect", false);
+        if (iceStallTimer !== null) {
+          window.clearTimeout(iceStallTimer);
+        }
+        // Ignore links that were replaced or closed on purpose
+        if (activeConnRef.current !== conn) {
+          return;
+        }
+
         activeConnRef.current = null;
         pendingChunkMetaRef.current = null;
+        endActiveCall("disconnect", false);
         setConnState("Not connected");
+        rejectReplies(new ConnectionLostError());
+
+        if (remoteByeRef.current) {
+          pushLog(`${conn.peer} disconnected.`);
+          abortSession(`${conn.peer} disconnected`);
+          failAllIncoming("Sender disconnected");
+          return;
+        }
+
+        // Incoming files stay open so the sender can resume them
+        activeInboxTransfersRef.current.forEach((transfer) => {
+          if (!transfer.finalizing) {
+            patchInboxItem(transfer.id, { status: "waiting", rate: 0, eta: null });
+          }
+        });
+        pushLog(`Connection to ${conn.peer} dropped. ${initiator ? "Reconnecting…" : "Waiting for it to reconnect…"}`, true);
+        startReconnectLoop(conn.peer, initiator ? "dialing" : "waiting");
       });
 
       conn.on("error", (err) => {
         pushLog(`Connection error: ${err.message || err}`, true);
       });
+
+      // Wake transfers that were paused waiting for this peer
+      for (const waiter of Array.from(connectionWaitersRef.current)) {
+        waiter(conn);
+      }
     },
-    [beginInboxTransfer, endActiveCall, extractArrayBuffer, flushInboxTransfer, parseControlMessage, pushLog, updateInboxTransferProgress]
+    [
+      abortSession,
+      beginInboxTransfer,
+      endActiveCall,
+      extractArrayBuffer,
+      failAllIncoming,
+      failIncomingTransfer,
+      finalizeInboxTransfer,
+      parseControlMessage,
+      patchInboxItem,
+      pushLog,
+      rejectReplies,
+      resolveReply,
+      sendControlMessage,
+      startReconnectLoop,
+      stopReconnectLoop,
+      updateInboxTransferProgress,
+    ]
   );
+
+  useEffect(() => {
+    wireConnectionRef.current = wireConnection;
+  }, [wireConnection]);
 
   // Destroy and recreate the PeerJS client with the current server settings
   const makePeer = useCallback((forceNewId = false) => {
@@ -1158,8 +1586,14 @@ export default function Home() {
         localStorage.setItem(LOCAL_PEER_ID_KEY, desiredId);
       }
 
+      // Drop the current link first so its close handler does not try to reconnect
+      stopReconnectLoop();
+      lastPeerRef.current = null;
+      activeConnRef.current = null;
+
       if (peerRef.current) {
         endActiveCall("disconnect", false);
+        abortSession("Peer was reset");
         try {
           peerRef.current.destroy();
         } catch (err) {
@@ -1167,7 +1601,6 @@ export default function Home() {
         }
       }
 
-      activeConnRef.current = null;
       setConnState("Not connected");
       setMyId(desiredId);
 
@@ -1215,11 +1648,34 @@ export default function Home() {
       peer.on("open", (id) => {
         setMyId(id);
         pushLog(`Peer ready. ID: ${id}`);
+
+        // Opening a share link (e.g. by scanning the QR code) connects right away
+        const linkedPeer = new URLSearchParams(window.location.search).get("peer")?.trim();
+        if (!autoConnectDoneRef.current && linkedPeer && linkedPeer !== id) {
+          autoConnectDoneRef.current = true;
+          pushLog(`Connecting to ${linkedPeer} from share link…`);
+          const conn = peer.connect(linkedPeer, DATA_CONNECTION_OPTIONS);
+          conn.on("open", () => wireConnectionRef.current(conn, true));
+        }
       });
 
       peer.on("connection", (conn) => {
         pushLog(`Incoming connection from ${conn.peer}`);
-        conn.on("open", () => wireConnection(conn));
+        conn.on("open", () => wireConnectionRef.current(conn, false));
+      });
+
+      // Losing the signalling server does not drop open links, but new/re-dialed links need it
+      peer.on("disconnected", () => {
+        window.setTimeout(() => {
+          if (peerRef.current === peer && !peer.destroyed && peer.disconnected) {
+            pushLog("Lost the peer server, reconnecting…", true);
+            try {
+              peer.reconnect();
+            } catch (err) {
+              pushLog(`Peer server reconnect failed: ${String(err)}`, true);
+            }
+          }
+        }, 3000);
       });
 
       peer.on("call", async (call) => {
@@ -1258,12 +1714,17 @@ export default function Home() {
           return;
         }
 
+        // Expected while redialing a peer that has not come back yet
+        if ((err as { type?: string }).type === "peer-unavailable" && reconnectLoopRef.current) {
+          return;
+        }
+
         pushLog(`Peer error: ${err.type || ""} ${err.message || err}`.trim(), true);
       });
     };
 
     connectWithId();
-  }, [endActiveCall, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, wireConnection]);
+  }, [abortSession, endActiveCall, host, path, port, pushLog, secure, setLocalStream, setRemoteStream, stopReconnectLoop]);
 
   // Apply the cloud or local defaults when the mode changes
   const applyModeDefaults = useCallback(
@@ -1296,35 +1757,47 @@ export default function Home() {
       return;
     }
 
-    const conn = peerRef.current.connect(trimmed, {
-      reliable: true,
-      serialization: "raw",
-      metadata: {
-        transferProfile: "raw-binary-v1",
-      },
-    });
-    conn.on("open", () => wireConnection(conn));
-  }, [pushLog, targetId, wireConnection]);
+    stopReconnectLoop();
+    const conn = peerRef.current.connect(trimmed, DATA_CONNECTION_OPTIONS);
+    conn.on("open", () => wireConnection(conn, true));
+  }, [pushLog, stopReconnectLoop, targetId, wireConnection]);
 
-  // Close current connection and reset UI state
+  // Close current connection (or stop reconnecting) and reset UI state
   const disconnectFromTarget = useCallback(() => {
-    if (!activeConnRef.current) {
+    const conn = activeConnRef.current;
+    if (!conn && !reconnectLoopRef.current) {
       pushLog("No active connection to disconnect.", true);
       return;
     }
 
-    endActiveCall("disconnect", true);
-
-    try {
-      activeConnRef.current.close();
-    } catch (err) {
-      pushLog(`Disconnect warning: ${String(err)}`, true);
+    if (conn) {
+      endActiveCall("disconnect", true);
     }
 
+    stopReconnectLoop();
+    lastPeerRef.current = null;
+    // Cleared before closing so the close handler treats this as intentional
     activeConnRef.current = null;
+    abortSession("Disconnected");
+    failAllIncoming("Disconnected");
+
+    if (conn) {
+      if (conn.open) {
+        sendControlMessage(conn, { kind: "bye" });
+      }
+      // Short delay so the goodbye is flushed before the link is torn down
+      window.setTimeout(() => {
+        try {
+          conn.close();
+        } catch (err) {
+          pushLog(`Disconnect warning: ${String(err)}`, true);
+        }
+      }, 200);
+    }
+
     setConnState("Not connected");
     pushLog("Disconnected from peer.");
-  }, [endActiveCall, pushLog]);
+  }, [abortSession, endActiveCall, failAllIncoming, pushLog, sendControlMessage, stopReconnectLoop]);
 
   // Send chat line that currently typed into input box
   const sendCurrentMessage = useCallback(() => {
@@ -1349,7 +1822,150 @@ export default function Home() {
     setMessage("");
   }, [message, pushLog, requireConnection, sendControlMessage, sender]);
 
-  // Stream files through worker so UI thread stays responsive
+  // Send one file, pausing through dropped connections and resuming where the receiver left off.
+  // Resolves with the receiver's checksum result (true / false, or null when it was not checked).
+  const sendOneFile = useCallback(
+    async (item: QueueItem, transferId: string, peerId: string, signal: AbortSignal): Promise<boolean | null> => {
+      const { file } = item;
+      const size = file.size;
+      const mime = file.type || "application/octet-stream";
+      const header: FileTransferHeader = {
+        transferId,
+        source: item.source,
+        name: item.path,
+        mime,
+        size,
+        totalChunks: Math.max(1, Math.ceil(size / FILE_CHUNK_SIZE)),
+      };
+      const chunkCount = Math.ceil(size / FILE_CHUNK_SIZE);
+      const hashing = canHashChunks();
+      const chunkHashes: Promise<ArrayBuffer>[] = [];
+      const transfer: ActiveOutgoingTransfer = { id: transferId, size, sentBytes: 0, rate: createRateTracker(), lastUiAt: 0 };
+      sendingTransfersRef.current.set(transferId, transfer);
+
+      const checkStillWanted = () => {
+        if (signal.aborted) {
+          throw signal.reason instanceof Error ? signal.reason : new PeerGoneError();
+        }
+        if (cancelledOutgoingTransfersRef.current.has(transferId)) {
+          throw new Error("Transfer canceled by receiver");
+        }
+      };
+
+      const finish = (verified: boolean | null) => {
+        patchOutgoingItem(transferId, { status: "done", complete: true, progress: 1, eta: null, verified });
+        return verified;
+      };
+
+      if (isLikelyCompressed(header.name, mime)) {
+        pushLog(`Skipping app-level compression for ${header.name}; file is already compressed or media.`);
+      }
+
+      let announced = false;
+      let resumeAttempts = 0;
+
+      try {
+        for (;;) {
+          checkStillWanted();
+          const current = activeConnRef.current;
+          let conn: DataConnection;
+          if (current?.open && current.peer === peerId) {
+            conn = current;
+          } else {
+            patchOutgoingItem(transferId, { status: "waiting", rate: 0, eta: null });
+            conn = await waitForConnection(peerId, signal);
+          }
+
+          try {
+            let startIndex = 0;
+            if (!announced) {
+              sendControlMessage(conn, { kind: "file-start", ...header });
+              announced = true;
+            } else {
+              // Ask the receiver how much it already has
+              resumeAttempts += 1;
+              if (resumeAttempts > MAX_RESUME_ATTEMPTS) {
+                throw new Error("Receiver did not answer resume requests");
+              }
+              const pendingReply = awaitReply(`resume:${transferId}`, RESUME_REPLY_TIMEOUT_MS);
+              sendControlMessage(conn, { kind: "resume-query", ...header });
+              const reply = await pendingReply;
+              if (reply.kind !== "resume-offset") {
+                throw new Error("Unexpected resume reply");
+              }
+              resumeAttempts = 0;
+              if (reply.complete) {
+                return finish(reply.verified ?? null);
+              }
+              startIndex = Math.min(Math.max(reply.nextIndex, 0), chunkCount);
+              pushLog(`Resuming ${header.name} from ${formatBytes(Math.min(startIndex * FILE_CHUNK_SIZE, size))}.`);
+            }
+
+            const startBytes = Math.min(startIndex * FILE_CHUNK_SIZE, size);
+            transfer.rate = createRateTracker(startBytes);
+            patchOutgoingItem(transferId, { status: "sending" });
+            updateOutgoingTransferProgress(transferId, startBytes, true);
+
+            for (let index = startIndex; index < chunkCount; index += 1) {
+              checkStillWanted();
+              const offset = index * FILE_CHUNK_SIZE;
+              const data = await file.slice(offset, Math.min(offset + FILE_CHUNK_SIZE, size)).arrayBuffer();
+              if (hashing) {
+                chunkHashes[index] = hashChunk(data);
+              }
+
+              await waitForBufferedDrain(conn);
+              sendControlMessage(conn, {
+                kind: "file-chunk-meta",
+                transferId,
+                index,
+                size: data.byteLength,
+              });
+              conn.send(data);
+              updateOutgoingTransferProgress(transferId, offset + data.byteLength);
+            }
+
+            const hash = hashing ? await combineChunkHashes(await Promise.all(chunkHashes.slice(0, chunkCount))) : null;
+            patchOutgoingItem(transferId, { status: "verifying", progress: 1, eta: null });
+            await waitForBufferedDrain(conn);
+
+            const pendingAck = awaitReply(`ack:${transferId}`, ACK_TIMEOUT_MS);
+            sendControlMessage(conn, { kind: "file-end", transferId, hash });
+            try {
+              const ack = await pendingAck;
+              return finish(ack.kind === "file-ack" ? ack.verified : null);
+            } catch (err) {
+              if (!(err instanceof ReplyTimeoutError)) {
+                throw err;
+              }
+              pushLog(`No delivery confirmation for ${header.name}; it may still have arrived.`, true);
+              return finish(null);
+            }
+          } catch (err) {
+            // Link dropped: pause, then resume on the next link to the same peer
+            if (err instanceof ConnectionLostError || err instanceof ReplyTimeoutError) {
+              continue;
+            }
+            throw err;
+          }
+        }
+      } finally {
+        sendingTransfersRef.current.delete(transferId);
+      }
+    },
+    [
+      awaitReply,
+      isLikelyCompressed,
+      patchOutgoingItem,
+      pushLog,
+      sendControlMessage,
+      updateOutgoingTransferProgress,
+      waitForBufferedDrain,
+      waitForConnection,
+    ]
+  );
+
+  // Send a batch; every file gets a row up front so overall progress is visible
   const sendFilePayloads = useCallback(
     async (items: QueueItem[]) => {
       if (!requireConnection()) {
@@ -1360,97 +1976,75 @@ export default function Home() {
         return;
       }
 
-      const label = items.some((item) => item.source === "Folder") ? "Folder" : "Files";
-      let sentCount = 0;
-
-      if (activeConnRef.current) {
-        sendControlMessage(activeConnRef.current, {
-          kind: "transfer-start",
-          label,
-          count: items.length,
-        });
+      const conn = activeConnRef.current;
+      if (!conn) {
+        return;
       }
 
-      for (const item of items) {
-        const { file } = item;
-        const transferId = `${Date.now()}-${Math.random()}`;
-        const mime = file.type || "application/octet-stream";
-        const fileName = item.path;
-        const totalChunks = Math.max(1, Math.ceil(file.size / FILE_CHUNK_SIZE));
-        const conn = activeConnRef.current;
+      const peerId = conn.peer;
+      const signal = sessionAbortRef.current.signal;
+      const label = items.some((item) => item.source === "Folder") ? "Folder" : "Files";
+      const batchId = createId();
+      const totalBytes = items.reduce((sum, item) => sum + item.file.size, 0);
+      const planned = items.map((item) => ({ item, transferId: createId() }));
 
-        if (isLikelyCompressed(fileName, mime)) {
-          pushLog(`Skipping app-level compression for ${fileName}; file is already compressed or media.`);
-        }
+      setSendBatchId(batchId);
+      setSendingItems((prev) => [
+        ...planned.map(({ item, transferId }): OutgoingItem => ({
+          id: transferId,
+          source: item.source,
+          name: item.path,
+          size: item.file.size,
+          progress: 0,
+          rate: 0,
+          eta: null,
+          status: "queued",
+          verified: null,
+          batchId,
+          complete: false,
+        })),
+        ...prev,
+      ]);
 
-        beginOutgoingTransfer(transferId, item.source, fileName, file.size, totalChunks);
+      sendControlMessage(conn, {
+        kind: "transfer-start",
+        label,
+        count: items.length,
+        totalBytes,
+        batchId,
+      });
 
+      let sentCount = 0;
+      for (const [position, { item, transferId }] of planned.entries()) {
         try {
-          if (!conn || !conn.open) {
-            throw new Error("Connection closed during transfer");
-          }
-
-          sendControlMessage(conn, {
-            kind: "file-start",
-            transferId,
-            source: item.source,
-            name: fileName,
-            mime,
-            size: file.size,
-            totalChunks,
-          });
-
-          for (let index = 0, offset = 0; offset < file.size; index += 1, offset += FILE_CHUNK_SIZE) {
-            if (!conn.open) {
-              throw new Error("Connection closed during transfer");
-            }
-
-            const chunkBlob = file.slice(offset, Math.min(offset + FILE_CHUNK_SIZE, file.size));
-            const data = await chunkBlob.arrayBuffer();
-
-            await waitForBufferedDrain(conn);
-            sendControlMessage(conn, {
-              kind: "file-chunk-meta",
-              transferId,
-              index,
-              size: data.byteLength,
-            });
-            await waitForBufferedDrain(conn);
-            conn.send(data);
-            updateOutgoingTransferProgress(transferId, data.byteLength);
-          }
-
-          await waitForBufferedDrain(conn);
-          sendControlMessage(conn, {
-            kind: "file-end",
-            transferId,
-          });
-
-          flushOutgoingTransfer(transferId);
+          const verified = await sendOneFile(item, transferId, peerId, signal);
           sentCount += 1;
           setQueue((prev) => prev.filter((queued) => queued.id !== item.id));
-          pushLog(`Sent ${item.source === "Folder" ? "folder file" : "file"}: ${fileName} (${formatBytes(file.size)})`);
+          const note =
+            verified === true ? ", checksum verified by receiver" : verified === false ? ", CHECKSUM MISMATCH reported by receiver" : "";
+          pushLog(
+            `Sent ${item.source === "Folder" ? "folder file" : "file"}: ${item.path} (${formatBytes(item.file.size)})${note}`,
+            verified === false
+          );
         } catch (err) {
-          pushLog(`Transfer canceled/failed for ${fileName}: ${String(err)}`, true);
-          sendingTransfersRef.current.delete(transferId);
-          setSendingItems((prev) => prev.filter((item) => item.id !== transferId));
+          pushLog(`Transfer canceled/failed for ${item.path}: ${err instanceof Error ? err.message : String(err)}`, true);
+          patchOutgoingItem(transferId, { status: "failed", complete: true, eta: null, rate: 0 });
+
+          // The peer is gone, so the rest of the batch cannot be delivered either
+          if (err instanceof PeerGoneError) {
+            const remaining = new Set(planned.slice(position + 1).map((entry) => entry.transferId));
+            setSendingItems((prev) =>
+              prev.map((row) => (remaining.has(row.id) ? { ...row, status: "failed", complete: true } : row))
+            );
+            break;
+          }
         }
       }
 
       pushLog(`${label} upload complete. ${sentCount} of ${items.length} item(s) sent successfully.`);
     },
-    [
-      beginOutgoingTransfer,
-      flushOutgoingTransfer,
-      isLikelyCompressed,
-      pushLog,
-      requireConnection,
-      sendControlMessage,
-      updateOutgoingTransferProgress,
-      waitForBufferedDrain,
-    ]
+    [patchOutgoingItem, pushLog, requireConnection, sendControlMessage, sendOneFile]
   );
-
   // Start media call
   const startCall = useCallback(
     async (kind: "audio" | "video") => {
@@ -1755,29 +2349,45 @@ export default function Home() {
     };
   }, [loadTrustedConnections]);
 
-  // Start/stop worker when the component unmounts
+  // Tell the peer we are leaving so it does not wait for a reconnect
   useEffect(() => {
-    const worker = new Worker("/workers/transfer-worker.js");
-    transferWorkerRef.current = worker;
-    const transferPromises = transferPromisesRef.current;
-    const workerQueue = workerQueueRef.current;
-
-    worker.onmessage = (event: MessageEvent<WorkerOutboundMessage>) => {
-      workerQueueRef.current.push(event.data);
-      void drainWorkerQueue();
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        return;
+      }
+      const conn = activeConnRef.current;
+      if (conn?.open) {
+        sendControlMessage(conn, { kind: "bye" });
+      }
     };
 
-    worker.onerror = (event) => {
-      pushLog(`Transfer worker failed: ${event.message}`, true);
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [sendControlMessage]);
+
+  // Render the share link as a QR code while the share dialog is open
+  useEffect(() => {
+    if (!qrOpen || !peerShareLink) {
+      return;
+    }
+
+    let cancelled = false;
+    QRCode.toDataURL(peerShareLink, { margin: 1, width: 480, errorCorrectionLevel: "M" })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch((err) => pushLog(`Could not create QR code: ${String(err)}`, true));
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setQrOpen(false);
     };
+    window.addEventListener("keydown", onKeyDown);
 
     return () => {
-      transferWorkerRef.current?.terminate();
-      transferWorkerRef.current = null;
-      workerQueue.length = 0;
-      transferPromises.clear();
+      cancelled = true;
+      window.removeEventListener("keydown", onKeyDown);
     };
-  }, [drainWorkerQueue, pushLog]);
+  }, [peerShareLink, pushLog, qrOpen]);
 
   // Poll WebRTC stats so the diagnostics panel stays live
   useEffect(() => {
@@ -1986,6 +2596,33 @@ export default function Home() {
   const visibleQueue = queue.slice(0, 200);
   const sendsRunning = sendingItems.some((item) => !item.complete);
   const readyCount = inboxItems.filter((item) => item.complete).length;
+  const sendBatchItems = sendBatchId ? sendingItems.filter((item) => item.batchId === sendBatchId) : [];
+  const sendBatch =
+    sendBatchItems.length > 1
+      ? summarizeBatch(sendBatchItems, sendBatchItems.length, sendBatchItems.reduce((sum, item) => sum + item.size, 0))
+      : null;
+  const receiveBatch =
+    incomingBatch && incomingBatch.count > 1
+      ? summarizeBatch(
+          inboxItems.filter((item) => item.batchId === incomingBatch.id),
+          incomingBatch.count,
+          incomingBatch.totalBytes
+        )
+      : null;
+  const routeHint =
+    diagnostics.route === "relay"
+      ? " Traffic goes through a relay (TURN) server, which is usually slower than a direct link."
+      : diagnostics.route === "direct"
+        ? " Direct peer-to-peer link."
+        : "";
+  const linkQuality =
+    diagnostics.dataChannelState !== "open" || diagnostics.rttMs === null
+      ? { label: "Measuring", dot: "bg-slate-400", chip: "border-slate-600 text-slate-300", hint: "Measuring link quality…" }
+      : diagnostics.rttMs < 120
+        ? { label: "Good", dot: "bg-emerald-400", chip: "border-emerald-500/40 text-emerald-300", hint: `Low latency.${routeHint}` }
+        : diagnostics.rttMs < 300
+          ? { label: "Fair", dot: "bg-amber-400", chip: "border-amber-500/40 text-amber-300", hint: `Noticeable latency; transfers may be slower.${routeHint}` }
+          : { label: "Poor", dot: "bg-rose-400", chip: "border-rose-500/40 text-rose-300", hint: `High latency; expect slow transfers.${routeHint}` };
   const chatMessages = logs.flatMap((row) => {
     const match = /^\[(.+?)\] (Sent|Received): ([\s\S]*)$/.exec(row.text);
     return match ? [{ id: row.id, time: match[1], mine: match[2] === "Sent", text: match[3] }] : [];
@@ -2010,6 +2647,37 @@ export default function Home() {
   const card = "rounded-2xl border border-slate-800 bg-slate-900/40";
   const badge = "ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-cyan-500/20 px-1.5 text-[10px] font-bold text-cyan-300";
   const sheetClass = "w-full max-w-[400px] border-slate-800 bg-[#0a0f1f] text-slate-100 overflow-y-auto";
+  // The Progress component's default colours come from a "primary" token this app does not define
+  const progressBar = "h-1.5 bg-slate-800 [&>*]:bg-cyan-400";
+
+  // "3 of 12 files sent · 45% · 2m left"
+  const renderBatchSummary = (batch: BatchSummary, verb: "sent" | "received") => (
+    <div className="space-y-1.5 border-b border-slate-800 px-4 py-3">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-medium text-slate-200">
+          {batch.done} of {batch.total} files {verb}
+          {batch.failed > 0 && <span className="text-rose-400"> · {batch.failed} failed</span>}
+        </span>
+        <span className="text-slate-400">{Math.round(batch.progress * 100)}%</span>
+      </div>
+      <Progress value={Math.min(Math.max(batch.progress * 100, 0), 100)} className={progressBar} />
+      <p className="flex justify-between gap-2 text-[11px] text-slate-500">
+        <span>{formatBytes(batch.bytes)} of {formatBytes(batch.totalBytes)}</span>
+        <span>{batch.active ? formatEta(batch.eta) : "Finished"}</span>
+      </p>
+    </div>
+  );
+
+  const renderVerifiedBadge = (verified: boolean | null) =>
+    verified === true ? (
+      <span className="inline-flex items-center gap-1 text-emerald-400" title="SHA-256 checksum matches on both sides">
+        <ShieldCheck className="size-3" /> Verified
+      </span>
+    ) : verified === false ? (
+      <span className="inline-flex items-center gap-1 text-rose-400" title="The received file differs from the original. Send it again.">
+        <ShieldAlert className="size-3" /> Checksum mismatch
+      </span>
+    ) : null;
 
   const receivedPanel = (
     <div className="flex h-full min-h-0 flex-col">
@@ -2017,7 +2685,8 @@ export default function Home() {
         <h2 className={sectionTitle}>Received</h2>
         <span className="text-xs text-slate-500">{readyCount} ready</span>
       </div>
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4">
+      {receiveBatch && <div className="border-t border-slate-800">{renderBatchSummary(receiveBatch, "received")}</div>}
+      <div className={`min-h-0 flex-1 space-y-2 overflow-y-auto px-4 ${receiveBatch ? "pt-3" : ""}`}>
         {inboxItems.length === 0 ? (
           <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-800 px-4 py-10 text-center">
             <Download className="size-6 text-slate-600" />
@@ -2035,13 +2704,22 @@ export default function Home() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium" title={item.name}>{item.name}</p>
                 {item.complete ? (
-                  <p className="text-xs text-slate-500">{formatBytes(item.size)}</p>
+                  <p className="flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+                    <span>{formatBytes(item.size)}</span>
+                    {renderVerifiedBadge(item.verified)}
+                  </p>
+                ) : item.status === "failed" ? (
+                  <p className="text-xs text-rose-400">{item.error ?? "Transfer failed"}</p>
                 ) : (
                   <div className="mt-1.5 space-y-1">
-                    <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
-                    <p className="flex justify-between text-[11px] text-slate-500">
-                      <span>{Math.round(item.progress * 100)}% of {formatBytes(item.size)}</span>
-                      <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
+                    <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className={progressBar} />
+                    <p className="flex justify-between gap-2 text-[11px] text-slate-500">
+                      <span className={item.status === "waiting" ? "text-amber-300" : undefined}>
+                        {statusLabel[item.status] ?? `${Math.round(item.progress * 100)}% of ${formatBytes(item.size)}`}
+                      </span>
+                      <span className="shrink-0">
+                        {item.status === "receiving" && item.rate > 0 ? `${formatBytes(item.rate)}/s · ${formatEta(item.eta)}` : ""}
+                      </span>
                     </p>
                   </div>
                 )}
@@ -2086,19 +2764,56 @@ export default function Home() {
           <Button variant="ghost" size="sm" className="!rounded-full !px-2" onClick={copyShareLink} aria-label="Copy share link" title="Copy share link">
             <Link2 className="size-3.5" />
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="!rounded-full !px-2"
+            onClick={() => setQrOpen(true)}
+            disabled={!peerShareLink}
+            aria-label="Show QR code"
+            title="Show QR code"
+          >
+            <QrCode className="size-3.5" />
+          </Button>
         </div>
 
         <div className="order-last w-full lg:order-none lg:mx-auto lg:w-auto lg:max-w-xl lg:flex-1">
           {isConnected ? (
             <div className="flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5">
-              <span className="size-2 shrink-0 rounded-full bg-emerald-400" />
+              <span
+                className={`size-2 shrink-0 rounded-full ${linkQuality.dot}`}
+                title={`Link quality: ${linkQuality.label}. ${linkQuality.hint}`}
+                aria-label={`Link quality: ${linkQuality.label}`}
+                role="img"
+              />
               <span className="min-w-0 flex-1 truncate text-sm">
                 Connected to <span className="font-mono font-semibold">{connectedPeer}</span>
               </span>
-              {diagnostics.rttMs !== null && (
-                <span className="hidden text-xs text-slate-400 sm:inline">{formatLatency(diagnostics.rttMs)}</span>
-              )}
+              <span
+                className={`hidden shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] sm:inline-flex ${linkQuality.chip}`}
+                title={linkQuality.hint}
+              >
+                {linkQuality.label}
+                {diagnostics.rttMs !== null && <span className="text-slate-400">· {formatLatency(diagnostics.rttMs)}</span>}
+                {diagnostics.route !== "unknown" && (
+                  <span className="text-slate-400">· {diagnostics.route === "relay" ? "Relay" : "Direct"}</span>
+                )}
+              </span>
               <Button variant="destructive" size="sm" onClick={disconnectFromTarget}>Disconnect</Button>
+            </div>
+          ) : reconnecting ? (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5" role="status">
+              {reconnecting.mode === "dialing" ? (
+                <LoaderCircle className="size-4 shrink-0 animate-spin text-amber-300" />
+              ) : (
+                <WifiOff className="size-4 shrink-0 text-amber-300" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-sm">
+                {reconnecting.mode === "dialing" ? "Reconnecting to " : "Connection lost, waiting for "}
+                <span className="font-mono font-semibold">{reconnecting.peerId}</span>
+                {reconnecting.mode === "dialing" && reconnecting.attempt > 1 ? ` (try ${reconnecting.attempt})` : "…"}
+              </span>
+              <Button variant="outline" size="sm" onClick={disconnectFromTarget}>Cancel</Button>
             </div>
           ) : (
             <form
@@ -2253,33 +2968,63 @@ export default function Home() {
                   </div>
                   {sendsRunning && (
                     <p className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
-                      Keep this tab open until transfers finish.
+                      You can switch tabs, but keep this one open until transfers finish. Dropped connections resume automatically.
                     </p>
                   )}
+                  {sendBatch && renderBatchSummary(sendBatch, "sent")}
                   <ul className="max-h-80 divide-y divide-slate-800/70 overflow-y-auto">
-                    {sendingItems.map((item) => (
+                    {sendingItems.slice(0, 200).map((item) => (
                       <li key={item.id} className="space-y-1.5 px-4 py-3">
                         <div className="flex items-center gap-3">
-                          {item.complete ? (
-                            <Check className="size-4 shrink-0 text-emerald-400" />
+                          {item.status === "done" ? (
+                            item.verified === true ? (
+                              <ShieldCheck className="size-4 shrink-0 text-emerald-400" aria-label="Verified" />
+                            ) : item.verified === false ? (
+                              <ShieldAlert className="size-4 shrink-0 text-rose-400" aria-label="Checksum mismatch" />
+                            ) : (
+                              <Check className="size-4 shrink-0 text-emerald-400" aria-label="Sent" />
+                            )
+                          ) : item.status === "failed" ? (
+                            <X className="size-4 shrink-0 text-rose-400" aria-label="Failed" />
+                          ) : item.status === "waiting" ? (
+                            <WifiOff className="size-4 shrink-0 text-amber-300" aria-label="Paused" />
+                          ) : item.status === "verifying" ? (
+                            <LoaderCircle className="size-4 shrink-0 animate-spin text-cyan-300" aria-label="Verifying" />
                           ) : (
-                            <ArrowUpFromLine className="size-4 shrink-0 animate-pulse text-cyan-300" />
+                            <ArrowUpFromLine
+                              className={`size-4 shrink-0 ${item.status === "sending" ? "animate-pulse text-cyan-300" : "text-slate-600"}`}
+                            />
                           )}
                           <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>{item.name}</span>
-                          <span className="shrink-0 text-xs text-slate-500">{formatBytes(item.size)}</span>
+                          <span className="flex shrink-0 items-center gap-2 text-xs text-slate-500">
+                            {item.status === "failed" && <span className="text-rose-400">Failed</span>}
+                            {item.status === "done" && renderVerifiedBadge(item.verified)}
+                            {formatBytes(item.size)}
+                          </span>
                         </div>
-                        {!item.complete && (
-                          <>
-                            <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className="h-1.5" />
-                            <p className="flex justify-between text-[11px] text-slate-500">
-                              <span>{Math.round(item.progress * 100)}%</span>
-                              <span>{item.rate > 0 ? `${formatBytes(item.rate)}/s` : ""}</span>
-                            </p>
-                          </>
+                        {item.status === "queued" ? (
+                          <p className="text-[11px] text-slate-500">{statusLabel.queued}</p>
+                        ) : (
+                          !item.complete && (
+                            <>
+                              <Progress value={Math.min(Math.max(item.progress * 100, 0), 100)} className={progressBar} />
+                              <p className="flex justify-between gap-2 text-[11px] text-slate-500">
+                                <span className={item.status === "waiting" ? "text-amber-300" : undefined}>
+                                  {statusLabel[item.status] ?? `${Math.round(item.progress * 100)}%`}
+                                </span>
+                                <span className="shrink-0">
+                                  {item.status === "sending" && item.rate > 0 ? `${formatBytes(item.rate)}/s · ${formatEta(item.eta)}` : ""}
+                                </span>
+                              </p>
+                            </>
+                          )
                         )}
                       </li>
                     ))}
                   </ul>
+                  {sendingItems.length > 200 && (
+                    <p className="border-t border-slate-800 px-4 py-2 text-xs text-slate-500">+{sendingItems.length - 200} more</p>
+                  )}
                 </section>
               )}
             </div>
@@ -2587,6 +3332,39 @@ export default function Home() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {qrOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setQrOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="qr-title"
+            className="w-full max-w-xs rounded-2xl border border-slate-800 bg-[#0a0f1f] p-5 text-center shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 id="qr-title" className={sectionTitle}>Scan to connect</h2>
+              <Button variant="ghost" size="sm" className="!px-1.5" onClick={() => setQrOpen(false)} aria-label="Close" autoFocus>
+                <X className="size-4" />
+              </Button>
+            </div>
+            {qrDataUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={qrDataUrl} alt="QR code for your share link" className="mt-3 aspect-square w-full rounded-xl bg-white p-2" />
+            ) : (
+              <div className="mt-3 aspect-square w-full animate-pulse rounded-xl bg-slate-800" />
+            )}
+            <p className="mt-3 font-mono text-sm font-semibold">{myId}</p>
+            <p className="mt-1 text-xs text-slate-400">Scan with another device&apos;s camera. It connects to you automatically.</p>
+            <Button variant="outline" size="sm" className="mt-4 w-full" onClick={copyShareLink}>
+              <Link2 className="size-4" /> Copy link instead
+            </Button>
+          </div>
+        </div>
+      )}
 
       <input ref={fileInputRef} className="hidden" type="file" multiple onChange={(event) => onFilesSelected(event.currentTarget, "Files")} />
       <input ref={folderInputRef} className="hidden" type="file" multiple onChange={(event) => onFilesSelected(event.currentTarget, "Folder")} />
