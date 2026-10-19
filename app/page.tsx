@@ -2,7 +2,6 @@
 
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import Peer, { DataConnection, MediaConnection } from "peerjs";
-import JSZip from "jszip";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Progress } from "@/components/animate-ui/components/radix/progress";
@@ -14,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { supabase } from "@/lib/supabase";
 import { createReceiveSink, type ReceiveSink } from "@/lib/receive-sink";
 import { canHashChunks, combineChunkHashes, hashChunk } from "@/lib/chunk-hash";
+import { buildZipBlob, writeZip, type ZipSource } from "@/lib/zip-stream";
 import {
   ArrowUpFromLine,
   Check,
@@ -493,21 +493,31 @@ const triggerBrowserDownload = (url: string, fileName: string) => {
 const downloadBlobFile = (blob: Blob, fileName: string) => {
   const url = URL.createObjectURL(blob);
   triggerBrowserDownload(url, fileName);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  // Revoking right away can abort large downloads before the browser has started reading the blob
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
-const buildFolderZipBlob = async (folderPath: string, items: InboxItem[]): Promise<Blob> => {
-  const zip = new JSZip();
-
-  for (const item of items) {
-    const relativePath = item.name.slice(folderPath.length + 1);
-    const response = await fetch(item.url);
-    const blob = await response.blob();
-    zip.file(relativePath, blob);
+const fetchItemBlob = async (url: string) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Could not read a received file (HTTP ${response.status}).`);
   }
-
-  return zip.generateAsync({ type: "blob" });
+  return response.blob();
 };
+
+const inboxItemsToZipSources = (items: InboxItem[], stripPrefix = ""): ZipSource[] =>
+  items.map((item) => ({
+    name: stripPrefix && item.name.startsWith(stripPrefix) ? item.name.slice(stripPrefix.length) : item.name,
+    getBlob: () => fetchItemBlob(item.url),
+  }));
+
+const buildFolderZipBlob = (folderPath: string, items: InboxItem[]): Promise<Blob> =>
+  buildZipBlob(inboxItemsToZipSources(items, `${folderPath}/`));
+
+type SaveFilePicker = (options: {
+  suggestedName?: string;
+  types?: { description: string; accept: Record<string, string[]> }[];
+}) => Promise<FileSystemFileHandle>;
 
 const writeBlobToDirectory = async (
   directory: FileSystemDirectoryHandle,
@@ -1256,19 +1266,57 @@ export default function Home() {
       return;
     }
 
-    pushLog("Creating archive...");
-    const zip = new JSZip();
+    const archiveName = "myftp-downloads.zip";
+    const sources = inboxItemsToZipSources(downloadable);
+    const total = sources.length;
+    let lastReportedQuarter = 0;
+    const reportProgress = (done: number) => {
+      const quarter = Math.floor((done / total) * 4);
+      if (total >= 20 && quarter > lastReportedQuarter && done < total) {
+        lastReportedQuarter = quarter;
+        pushLog(`Archiving... ${done}/${total} file(s).`);
+      }
+    };
+
+    // Stream straight to disk when the browser allows it, so archive size is not limited by memory.
+    // The picker must be opened before any other await to keep the click's user activation.
+    const savePicker = (window as Window & { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
+    let writable: FileSystemWritableFileStream | null = null;
+    if (savePicker) {
+      try {
+        const handle = await savePicker({
+          suggestedName: archiveName,
+          types: [{ description: "ZIP archive", accept: { "application/zip": [".zip"] } }],
+        });
+        writable = await handle.createWritable();
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          pushLog("Archive download cancelled.");
+          return;
+        }
+        // Picker unavailable in this context: fall back to an in-browser download
+        writable = null;
+      }
+    }
+
+    pushLog(`Creating archive of ${total} file(s)...`);
 
     try {
-      for (const item of downloadable) {
-        const response = await fetch(item.url);
-        const blob = await response.blob();
-        zip.file(item.name, blob);
+      if (writable) {
+        const target = writable;
+        try {
+          await writeZip(sources, (chunk) => target.write(chunk), reportProgress);
+          await target.close();
+        } catch (error) {
+          await target.abort().catch(() => undefined);
+          throw error;
+        }
+        pushLog(`Saved ${archiveName} with ${total} item(s).`);
+      } else {
+        const zipBlob = await buildZipBlob(sources, reportProgress);
+        downloadBlobFile(zipBlob, archiveName);
+        pushLog(`Created and downloaded ${archiveName} with ${total} item(s).`);
       }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      downloadBlobFile(zipBlob, "myftp-downloads.zip");
-      pushLog(`Created and downloaded myftp-downloads.zip with ${downloadable.length} item(s).`);
     } catch (error) {
       pushLog(`Failed to create archive: ${error instanceof Error ? error.message : "Unknown error"}`, true);
     }
@@ -1788,10 +1836,13 @@ export default function Home() {
       });
 
       peer.on("call", async (call) => {
-        pushLog(`Incoming call from ${call.peer}`);
+        // The caller tags the call with its kind; answer with the camera only for video calls
+        const incomingKind: "audio" | "video" =
+          (call.metadata as { kind?: string } | undefined)?.kind === "video" ? "video" : "audio";
+        pushLog(`Incoming ${incomingKind} call from ${call.peer}`);
         try {
           if (!localStreamRef.current) {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incomingKind === "video" });
             setLocalStream(stream);
           }
 
@@ -2267,7 +2318,7 @@ export default function Home() {
           mediaConnRef.current.close();
         }
 
-        const call = peerRef.current.call(activeConnRef.current.peer, stream);
+        const call = peerRef.current.call(activeConnRef.current.peer, stream, { metadata: { kind } });
         mediaConnRef.current = call;
         setCallType(kind);
 
